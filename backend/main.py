@@ -467,6 +467,9 @@ async def root():
         "name": "ChainVigil API",
         "version": "1.0.0",
         "description": "Cross-Channel Mule Detection System",
+        "status": "running",
+        "note": "Service is up. Run POST /api/pipeline/run once to build graph and train model.",
+        "quickstart": "/api/quickstart/init",
         "neo4j_connected": state["neo4j_client"] is not None and state["neo4j_client"].is_connected,
         "graph_loaded": state["nx_graph"] is not None,
         "model_trained": state["trainer"] is not None,
@@ -1041,6 +1044,12 @@ async def run_full_pipeline():
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/quickstart/init", response_model=PipelineStatus)
+async def quickstart_init():
+    """Browser-friendly one-click pipeline init for first deployment run."""
+    return await run_full_pipeline()
 
 
 # ─── Real-Time Fraud APIs ───────────────────────────────────
