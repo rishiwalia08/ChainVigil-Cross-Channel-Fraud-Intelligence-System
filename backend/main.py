@@ -66,7 +66,29 @@ state = {
     "nft_cases": [],
     "processed_txn_ids": set(),
     "transaction_decisions": {},
+    "init_in_progress": False,
+    "init_last_status": "not_started",
+    "init_last_error": None,
 }
+
+
+async def _auto_init_pipeline_once():
+    """Initialize full pipeline once on startup (best effort)."""
+    if state["init_in_progress"]:
+        return
+
+    state["init_in_progress"] = True
+    state["init_last_status"] = "running"
+    state["init_last_error"] = None
+
+    try:
+        await run_full_pipeline()
+        state["init_last_status"] = "complete"
+    except Exception as e:
+        state["init_last_status"] = "failed"
+        state["init_last_error"] = str(e)
+    finally:
+        state["init_in_progress"] = False
 
 
 # ─── Real-Time Models & Helpers ─────────────────────────────
@@ -451,6 +473,10 @@ async def startup():
         print(f"⚠️  Neo4j not available: {e}")
         print("   Running in NetworkX-only mode")
 
+    auto_init = os.getenv("AUTO_INIT_PIPELINE", "1").lower() in {"1", "true", "yes", "on"}
+    if auto_init:
+        asyncio.create_task(_auto_init_pipeline_once())
+
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -473,6 +499,9 @@ async def root():
         "neo4j_connected": state["neo4j_client"] is not None and state["neo4j_client"].is_connected,
         "graph_loaded": state["nx_graph"] is not None,
         "model_trained": state["trainer"] is not None,
+        "init_in_progress": state["init_in_progress"],
+        "init_last_status": state["init_last_status"],
+        "init_last_error": state["init_last_error"],
     }
 
 
