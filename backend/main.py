@@ -76,36 +76,12 @@ else:
 
 # ─── Lifecycle Events ─────────────────────────────────────────
 
-async def _auto_init_pipeline():
-    """Run full pipeline once on startup in background (best-effort)."""
-    if state["init_status"] == "running":
-        return
-    state["init_status"] = "running"
-    state["init_error"] = None
-    print("🚀 Auto-init: starting pipeline in background...")
-    try:
-        await run_full_pipeline()
-        state["init_status"] = "complete"
-        print("✅ Auto-init: pipeline complete")
-    except Exception as e:
-        state["init_status"] = "failed"
-        state["init_error"] = str(e)
-        print(f"❌ Auto-init failed: {e}")
-
-
 @app.on_event("startup")
 async def startup():
-    """Initialize Neo4j connection and kick off background pipeline."""
-    try:
-        client = Neo4jClient()
-        if client.is_connected:
-            state["neo4j_client"] = client
-    except Exception as e:
-        print(f"⚠️  Neo4j not available: {e}")
-        print("   Running in NetworkX-only mode")
-
-    # Start pipeline in background so startup doesn't block
-    asyncio.create_task(_auto_init_pipeline())
+    """Startup must be INSTANT so Render can detect the port immediately.
+    Neo4j and pipeline are lazy-initialized on first API call.
+    """
+    print("✅ ChainVigil API started. Visit /docs or use the UI to run the pipeline.")
 
 
 @app.on_event("shutdown")
