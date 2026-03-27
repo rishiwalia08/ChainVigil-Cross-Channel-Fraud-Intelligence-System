@@ -14,13 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Upgrade pip
 RUN pip install --upgrade pip setuptools wheel
 
-# Install CPU-only PyTorch first (avoids downloading CUDA ~2GB)
-RUN pip install --no-cache-dir \
-    torch==2.1.0+cpu \
-    torch-geometric==2.4.0 \
-    --extra-index-url https://download.pytorch.org/whl/cpu
-
-# Copy and install remaining Python dependencies
+# Copy and install all Python dependencies (includes CPU-only torch via --extra-index-url)
 COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
