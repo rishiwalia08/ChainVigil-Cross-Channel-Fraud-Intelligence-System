@@ -12,11 +12,14 @@ Main entry point with API routes for:
 
 import os
 import json
+import asyncio
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from backend.config import DATA_DIR, MODEL_DIR
 from backend.models.schemas import (
@@ -56,14 +59,43 @@ state = {
     "risk_scores": None,
     "risk_summary": None,
     "explanations": {},
+    "init_status": "not_started",  # not_started | running | complete | failed
+    "init_error": None,
 }
+
+# ─── Static Files (React Frontend) ─────────────────────────────
+
+FRONTEND_DIST = Path(__file__).parent.parent / "frontend-app" / "dist"
+
+if FRONTEND_DIST.exists():
+    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
+    print(f"✅ React frontend mounted from {FRONTEND_DIST}")
+else:
+    print(f"⚠️  Frontend dist not found at {FRONTEND_DIST} — serving API only")
 
 
 # ─── Lifecycle Events ─────────────────────────────────────────
 
+async def _auto_init_pipeline():
+    """Run full pipeline once on startup in background (best-effort)."""
+    if state["init_status"] == "running":
+        return
+    state["init_status"] = "running"
+    state["init_error"] = None
+    print("🚀 Auto-init: starting pipeline in background...")
+    try:
+        await run_full_pipeline()
+        state["init_status"] = "complete"
+        print("✅ Auto-init: pipeline complete")
+    except Exception as e:
+        state["init_status"] = "failed"
+        state["init_error"] = str(e)
+        print(f"❌ Auto-init failed: {e}")
+
+
 @app.on_event("startup")
 async def startup():
-    """Initialize Neo4j connection on startup."""
+    """Initialize Neo4j connection and kick off background pipeline."""
     try:
         client = Neo4jClient()
         if client.is_connected:
@@ -71,6 +103,9 @@ async def startup():
     except Exception as e:
         print(f"⚠️  Neo4j not available: {e}")
         print("   Running in NetworkX-only mode")
+
+    # Start pipeline in background so startup doesn't block
+    asyncio.create_task(_auto_init_pipeline())
 
 
 @app.on_event("shutdown")
@@ -82,8 +117,14 @@ async def shutdown():
 
 # ─── Health & Info ─────────────────────────────────────────────
 
-@app.get("/")
-async def root():
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
+
+
+@app.get("/api/status")
+async def api_status():
+    """API status — same info that used to be at root."""
     return {
         "name": "ChainVigil API",
         "version": "1.0.0",
@@ -91,12 +132,23 @@ async def root():
         "neo4j_connected": state["neo4j_client"] is not None and state["neo4j_client"].is_connected,
         "graph_loaded": state["nx_graph"] is not None,
         "model_trained": state["trainer"] is not None,
+        "init_status": state["init_status"],
+        "init_error": state["init_error"],
     }
 
 
-@app.get("/health")
-async def health():
-    return {"status": "healthy"}
+@app.get("/")
+async def root():
+    """Serve React frontend index.html, or fallback API info."""
+    index_file = FRONTEND_DIST / "index.html"
+    if index_file.exists():
+        return FileResponse(str(index_file))
+    return {
+        "name": "ChainVigil API",
+        "version": "1.0.0",
+        "note": "Frontend not built. Visit /docs for API documentation.",
+        "init_status": state["init_status"],
+    }
 
 
 # ─── Phase 1: Data Generation ─────────────────────────────────
@@ -628,3 +680,17 @@ async def run_full_pipeline():
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Catch-all: React SPA routing ────────────────────────────
+# Must be LAST route so it doesn't override API routes above
+
+from fastapi import Request
+
+@app.get("/{full_path:path}")
+async def spa_fallback(request: Request, full_path: str):
+    """Serve React app for all non-API routes (enables client-side routing)."""
+    index_file = FRONTEND_DIST / "index.html"
+    if index_file.exists():
+        return FileResponse(str(index_file))
+    raise HTTPException(status_code=404, detail=f"Path /{full_path} not found")
