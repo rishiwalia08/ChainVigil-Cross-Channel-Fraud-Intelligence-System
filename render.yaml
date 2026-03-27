@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: chainvigil
+    env: docker
+    dockerfilePath: ./Dockerfile
+    # Render injects PORT env var automatically; CMD in Dockerfile reads ${PORT:-8000}
+    healthCheckPath: /health
+    plan: standard  # use 'free' if on free tier, but ML models need memory
+    envVars:
+      - key: PYTHON_ENV
+        value: production
+      # Neo4j — set these in Render dashboard if you have a cloud Neo4j instance
+      # - key: NEO4J_URI
+      #   value: bolt://your-neo4j-host:7687
+      # - key: NEO4J_USER
+      #   value: neo4j
+      # - key: NEO4J_PASSWORD
+      #   sync: false   # set manually in dashboard

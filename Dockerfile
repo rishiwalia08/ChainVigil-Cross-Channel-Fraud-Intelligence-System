@@ -8,21 +8,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     git \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip
 RUN pip install --upgrade pip setuptools wheel
 
-# Copy and install Python dependencies
+# Install CPU-only PyTorch first (avoids downloading CUDA ~2GB)
+RUN pip install --no-cache-dir \
+    torch==2.1.0+cpu \
+    torch-geometric==2.4.0 \
+    --extra-index-url https://download.pytorch.org/whl/cpu
+
+# Copy and install remaining Python dependencies
 COPY backend/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt gunicorn
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy project files
 COPY . .
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/api/health')" || exit 1
+# Expose port (Render will override via $PORT env var)
+EXPOSE 8000
 
-# Run FastAPI app with Gunicorn
-CMD ["gunicorn", "backend.main:app", "--workers", "2", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "120"]
+# Health check using the dynamic port
+HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
+
+# Run with uvicorn, binding to $PORT (Render sets this automatically)
+CMD uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --timeout-keep-alive 75
