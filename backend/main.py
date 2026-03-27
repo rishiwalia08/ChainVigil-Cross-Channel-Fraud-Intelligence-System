@@ -12,18 +12,11 @@ Main entry point with API routes for:
 
 import os
 import json
-import time
-import hashlib
-import random
-import asyncio
-from pathlib import Path
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
 
 from backend.config import DATA_DIR, MODEL_DIR
 from backend.models.schemas import (
@@ -63,401 +56,7 @@ state = {
     "risk_scores": None,
     "risk_summary": None,
     "explanations": {},
-    "nft_cases": [],
-    "processed_txn_ids": set(),
-    "transaction_decisions": {},
-    "init_in_progress": False,
-    "init_last_status": "not_started",
-    "init_last_error": None,
 }
-
-
-async def _auto_init_pipeline_once():
-    """Initialize full pipeline once on startup (best effort)."""
-    if state["init_in_progress"]:
-        return
-
-    state["init_in_progress"] = True
-    state["init_last_status"] = "running"
-    state["init_last_error"] = None
-
-    try:
-        await run_full_pipeline()
-        state["init_last_status"] = "complete"
-    except Exception as e:
-        state["init_last_status"] = "failed"
-        state["init_last_error"] = str(e)
-    finally:
-        state["init_in_progress"] = False
-
-
-# ─── Real-Time Models & Helpers ─────────────────────────────
-
-LEDGER_FILE = os.path.join(DATA_DIR, "..", "reports", "fraud_ledger.jsonl")
-LEDGER_SALT = os.getenv("LEDGER_SALT", "chainvigil-ledger-salt")
-
-
-class TransactionCheckRequest(BaseModel):
-    transaction_id: str = Field(..., min_length=4)
-    source_id: str
-    target_id: str
-    amount: float = Field(..., gt=0)
-    channel_type: str = Field(default="UPI")
-    timestamp: Optional[str] = None
-    geo_location: Optional[str] = None
-    device_id: Optional[str] = None
-    ip_address: Optional[str] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
-
-class TransactionDecisionResponse(BaseModel):
-    transaction_id: str
-    gnn_score: float
-    rule_score: float
-    intel_score: float
-    hybrid_score: float
-    decision: str
-    reasons: List[str]
-    ledger_tx_id: str
-    processed_at: str
-
-
-class StreamSimulationRequest(BaseModel):
-    num_transactions: int = Field(default=25, ge=1, le=2000)
-    interval_ms: int = Field(default=0, ge=0, le=5000)
-
-
-def _parse_ts(ts: Optional[str]) -> datetime:
-    if not ts:
-        return datetime.now(timezone.utc)
-    try:
-        clean = ts.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(clean)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except Exception:
-        return datetime.now(timezone.utc)
-
-
-def _anonymize_account(account_id: str) -> str:
-    return hashlib.sha256(f"{LEDGER_SALT}:{account_id}".encode()).hexdigest()[:16]
-
-
-class FraudLedger:
-    def __init__(self, file_path: str):
-        self.path = Path(file_path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self.path.write_text("")
-
-    def _read_all(self) -> List[Dict[str, Any]]:
-        raw = self.path.read_text().strip()
-        if not raw:
-            return []
-        blocks = []
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                blocks.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-        return blocks
-
-    def _last_hash(self) -> str:
-        blocks = self._read_all()
-        return blocks[-1]["block_hash"] if blocks else "GENESIS"
-
-    def append(self, payload: Dict[str, Any]) -> str:
-        block = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "prev_hash": self._last_hash(),
-            "payload": payload,
-        }
-        raw = json.dumps(block, sort_keys=True)
-        block_hash = hashlib.sha256(raw.encode()).hexdigest()
-        block["block_hash"] = block_hash
-        with self.path.open("a") as f:
-            f.write(json.dumps(block) + "\n")
-        return block_hash
-
-    def verify(self) -> Dict[str, Any]:
-        blocks = self._read_all()
-        if not blocks:
-            return {"valid": True, "blocks": 0, "message": "ledger empty"}
-
-        expected_prev = "GENESIS"
-        for i, block in enumerate(blocks):
-            stored_hash = block.get("block_hash", "")
-            if block.get("prev_hash") != expected_prev:
-                return {
-                    "valid": False,
-                    "blocks": len(blocks),
-                    "failed_at_index": i,
-                    "reason": "prev_hash mismatch",
-                }
-
-            to_hash = {
-                "ts": block.get("ts"),
-                "prev_hash": block.get("prev_hash"),
-                "payload": block.get("payload"),
-            }
-            computed = hashlib.sha256(json.dumps(to_hash, sort_keys=True).encode()).hexdigest()
-            if computed != stored_hash:
-                return {
-                    "valid": False,
-                    "blocks": len(blocks),
-                    "failed_at_index": i,
-                    "reason": "block_hash mismatch",
-                }
-
-            expected_prev = stored_hash
-
-        return {"valid": True, "blocks": len(blocks), "last_hash": expected_prev}
-
-    def recent(self, limit: int = 20) -> List[Dict[str, Any]]:
-        blocks = self._read_all()
-        if limit <= 0:
-            return []
-        return list(reversed(blocks[-limit:]))
-
-
-class RuleEngine:
-    def evaluate(
-        self,
-        txn: TransactionCheckRequest,
-        G,
-        risk_lookup: Dict[str, Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        score = 0.0
-        reasons: List[str] = []
-        hard_block = False
-
-        if txn.source_id == txn.target_id:
-            hard_block = True
-            score = 1.0
-            reasons.append("self_transfer_detected")
-
-        if txn.amount >= 100000:
-            score += 0.35
-            reasons.append("very_high_amount")
-        elif txn.amount >= 50000:
-            score += 0.2
-            reasons.append("high_amount")
-
-        if txn.channel_type.upper() == "ATM" and txn.amount >= 20000:
-            score += 0.1
-            reasons.append("high_value_atm")
-
-        src_risk = risk_lookup.get(txn.source_id, {}).get("mule_probability", 0.0)
-        dst_risk = risk_lookup.get(txn.target_id, {}).get("mule_probability", 0.0)
-        if max(src_risk, dst_risk) >= 0.85:
-            score += 0.3
-            reasons.append("known_high_risk_party")
-        elif max(src_risk, dst_risk) >= 0.6:
-            score += 0.15
-            reasons.append("known_medium_risk_party")
-
-        # Velocity rule: source sent multiple transfers in last 10 minutes
-        now_ts = _parse_ts(txn.timestamp)
-        recent_cutoff = now_ts - timedelta(minutes=10)
-        recent_outgoing = 0
-        if txn.source_id in G:
-            for _, _, edge in G.out_edges(txn.source_id, data=True):
-                if edge.get("edge_type") != "TRANSFERRED_TO":
-                    continue
-                edge_ts = _parse_ts(edge.get("timestamp"))
-                if edge_ts >= recent_cutoff:
-                    recent_outgoing += 1
-
-        if recent_outgoing >= 5:
-            score += 0.25
-            reasons.append("rapid_outgoing_velocity")
-        elif recent_outgoing >= 3:
-            score += 0.12
-            reasons.append("moderate_outgoing_velocity")
-
-        return {
-            "score": min(1.0, round(score, 4)),
-            "hard_block": hard_block,
-            "reasons": reasons,
-        }
-
-
-class DeviceIpIntel:
-    def score(self, txn: TransactionCheckRequest, G) -> Dict[str, Any]:
-        score = 0.0
-        reasons: List[str] = []
-
-        if txn.device_id and txn.device_id in G:
-            users = {
-                src for src, _, d in G.in_edges(txn.device_id, data=True)
-                if d.get("edge_type") == "USED_DEVICE"
-            }
-            if len(users) >= 6:
-                score += 0.25
-                reasons.append("device_shared_many_accounts")
-            elif len(users) >= 3:
-                score += 0.12
-                reasons.append("device_shared_multiple_accounts")
-
-        if txn.ip_address and txn.ip_address in G:
-            users = {
-                src for src, _, d in G.in_edges(txn.ip_address, data=True)
-                if d.get("edge_type") == "LOGGED_FROM"
-            }
-            if len(users) >= 8:
-                score += 0.25
-                reasons.append("ip_shared_many_accounts")
-            elif len(users) >= 4:
-                score += 0.12
-                reasons.append("ip_shared_multiple_accounts")
-
-        return {
-            "score": min(1.0, round(score, 4)),
-            "reasons": reasons,
-        }
-
-
-class HybridScorer:
-    def __init__(self, w_gnn: float = 0.55, w_rule: float = 0.3, w_intel: float = 0.15):
-        self.w_gnn = w_gnn
-        self.w_rule = w_rule
-        self.w_intel = w_intel
-
-    def combine(self, gnn_score: float, rule_score: float, intel_score: float) -> float:
-        score = (
-            self.w_gnn * gnn_score
-            + self.w_rule * rule_score
-            + self.w_intel * intel_score
-        )
-        return min(1.0, round(score, 4))
-
-
-class ActionEngine:
-    def decide(self, hybrid_score: float, hard_block: bool = False) -> str:
-        if hard_block or hybrid_score >= 0.9:
-            return "FREEZE"
-        if hybrid_score >= 0.75:
-            return "BLOCK"
-        if hybrid_score >= 0.5:
-            return "MONITOR"
-        return "ALLOW"
-
-
-def _upsert_live_entities_and_edges(G, txn: TransactionCheckRequest):
-    if txn.source_id not in G:
-        G.add_node(txn.source_id, entity_type="Account", is_mule=False)
-    if txn.target_id not in G:
-        G.add_node(txn.target_id, entity_type="Account", is_mule=False)
-
-    G.add_edge(
-        txn.source_id,
-        txn.target_id,
-        edge_type="TRANSFERRED_TO",
-        transaction_id=txn.transaction_id,
-        amount=float(txn.amount),
-        timestamp=(txn.timestamp or datetime.now(timezone.utc).isoformat()),
-        channel_type=txn.channel_type,
-        geo_location=txn.geo_location or "",
-        is_suspicious=False,
-        ingestion_mode="realtime",
-    )
-
-    if txn.device_id:
-        if txn.device_id not in G:
-            G.add_node(txn.device_id, entity_type="Device")
-        G.add_edge(txn.source_id, txn.device_id, edge_type="USED_DEVICE")
-
-    if txn.ip_address:
-        if txn.ip_address not in G:
-            G.add_node(txn.ip_address, entity_type="IPAddress")
-        G.add_edge(txn.source_id, txn.ip_address, edge_type="LOGGED_FROM")
-
-
-def _estimate_gnn_score(txn: TransactionCheckRequest) -> float:
-    # Low-latency fallback: use latest account risk cache (if available).
-    # In a full online setup, this should run incremental feature update + model inference.
-    risk_lookup = {}
-    if state.get("risk_scores"):
-        risk_lookup = {r["account_id"]: r for r in state["risk_scores"]}
-
-    src = risk_lookup.get(txn.source_id, {}).get("mule_probability")
-    dst = risk_lookup.get(txn.target_id, {}).get("mule_probability")
-
-    known_scores = [s for s in [src, dst] if isinstance(s, (int, float))]
-    if known_scores:
-        return round(float(max(known_scores)), 4)
-
-    # Cold-start heuristic
-    return 0.5 if txn.amount < 25000 else 0.62
-
-
-def _process_transaction(txn: TransactionCheckRequest) -> Dict[str, Any]:
-    G = state.get("nx_graph")
-    if G is None:
-        raise HTTPException(status_code=400, detail="Graph not built. Run /api/ingest or /api/pipeline/run first.")
-
-    # Idempotency handling
-    if txn.transaction_id in state["transaction_decisions"]:
-        return state["transaction_decisions"][txn.transaction_id]
-
-    _upsert_live_entities_and_edges(G, txn)
-
-    risk_lookup = {}
-    if state.get("risk_scores"):
-        risk_lookup = {r["account_id"]: r for r in state["risk_scores"]}
-
-    gnn_score = _estimate_gnn_score(txn)
-    rule_engine = RuleEngine()
-    intel_engine = DeviceIpIntel()
-    hybrid_scorer = HybridScorer()
-    action_engine = ActionEngine()
-    ledger = FraudLedger(LEDGER_FILE)
-
-    rule_out = rule_engine.evaluate(txn, G, risk_lookup)
-    intel_out = intel_engine.score(txn, G)
-    hybrid_score = hybrid_scorer.combine(
-        gnn_score=gnn_score,
-        rule_score=rule_out["score"],
-        intel_score=intel_out["score"],
-    )
-
-    decision = action_engine.decide(hybrid_score, hard_block=rule_out["hard_block"])
-    reasons = list(dict.fromkeys(rule_out["reasons"] + intel_out["reasons"]))
-
-    ledger_payload = {
-        "transaction_id": txn.transaction_id,
-        "source_anon": _anonymize_account(txn.source_id),
-        "target_anon": _anonymize_account(txn.target_id),
-        "amount": txn.amount,
-        "channel_type": txn.channel_type,
-        "gnn_score": gnn_score,
-        "rule_score": rule_out["score"],
-        "intel_score": intel_out["score"],
-        "hybrid_score": hybrid_score,
-        "decision": decision,
-        "reasons": reasons,
-    }
-    ledger_tx_id = ledger.append(ledger_payload)
-
-    result = {
-        "transaction_id": txn.transaction_id,
-        "gnn_score": gnn_score,
-        "rule_score": rule_out["score"],
-        "intel_score": intel_out["score"],
-        "hybrid_score": hybrid_score,
-        "decision": decision,
-        "reasons": reasons,
-        "ledger_tx_id": ledger_tx_id,
-        "processed_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-    state["processed_txn_ids"].add(txn.transaction_id)
-    state["transaction_decisions"][txn.transaction_id] = result
-    return result
 
 
 # ─── Lifecycle Events ─────────────────────────────────────────
@@ -472,10 +71,6 @@ async def startup():
     except Exception as e:
         print(f"⚠️  Neo4j not available: {e}")
         print("   Running in NetworkX-only mode")
-
-    auto_init = os.getenv("AUTO_INIT_PIPELINE", "1").lower() in {"1", "true", "yes", "on"}
-    if auto_init:
-        asyncio.create_task(_auto_init_pipeline_once())
 
 
 @app.on_event("shutdown")
@@ -493,15 +88,9 @@ async def root():
         "name": "ChainVigil API",
         "version": "1.0.0",
         "description": "Cross-Channel Mule Detection System",
-        "status": "running",
-        "note": "Service is up. Run POST /api/pipeline/run once to build graph and train model.",
-        "quickstart": "/api/quickstart/init",
         "neo4j_connected": state["neo4j_client"] is not None and state["neo4j_client"].is_connected,
         "graph_loaded": state["nx_graph"] is not None,
         "model_trained": state["trainer"] is not None,
-        "init_in_progress": state["init_in_progress"],
-        "init_last_status": state["init_last_status"],
-        "init_last_error": state["init_last_error"],
     }
 
 
@@ -715,7 +304,6 @@ async def run_risk_analysis():
     try:
         from backend.gnn.predict import predict_scores, load_model
         from backend.risk.engine import RiskIntelligenceEngine
-        from backend.realtime.nft import FraudCaseNFTRegistry
 
         # Get predictions
         risk_scores = predict_scores(
@@ -732,29 +320,6 @@ async def run_risk_analysis():
         summary = engine.analyze()
         state["risk_summary"] = summary
 
-        # Minimal NFT-like certification for high-risk clusters
-        nft_registry = FraudCaseNFTRegistry(
-            os.path.join(DATA_DIR, "..", "reports", "nft_cases.json")
-        )
-        minted = []
-        for cluster in summary.get("clusters", []):
-            if cluster.get("avg_risk_score", 0) < 0.75:
-                continue
-            case_payload = {
-                "case_id": f"CASE-{cluster['cluster_id']}",
-                "cluster_id": cluster["cluster_id"],
-                "members": cluster.get("members", []),
-                "size": cluster.get("size", 0),
-                "risk_score": cluster.get("avg_risk_score", 0),
-                "explanation": (
-                    f"Potential mule ring with {cluster.get('size', 0)} accounts, "
-                    f"density {cluster.get('density', 0):.2f}, "
-                    f"velocity {cluster.get('avg_velocity_seconds', 0):.1f}s."
-                ),
-            }
-            minted.append(nft_registry.mint_case_certificate(case_payload))
-        state["nft_cases"] = minted
-
         return PipelineStatus(
             stage="Risk Analysis",
             status="complete",
@@ -765,20 +330,10 @@ async def run_risk_analysis():
                 "flagged": summary["flagged_accounts"],
                 "clusters": summary["clusters_detected"],
                 "risk_distribution": summary["risk_distribution"],
-                "nft_cases_minted": len(state["nft_cases"]),
             },
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/nft/cases")
-async def list_nft_cases():
-    """List minted NFT-like fraud case certificates."""
-    return {
-        "count": len(state.get("nft_cases", [])),
-        "cases": state.get("nft_cases", []),
-    }
 
 
 # ─── Phase 4: XAI & Reports ───────────────────────────────────
@@ -1071,112 +626,5 @@ async def run_full_pipeline():
                 },
             },
         )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/quickstart/init", response_model=PipelineStatus)
-async def quickstart_init():
-    """Browser-friendly one-click pipeline init for first deployment run."""
-    return await run_full_pipeline()
-
-
-# ─── Real-Time Fraud APIs ───────────────────────────────────
-
-@app.post("/api/transaction/check", response_model=TransactionDecisionResponse)
-async def check_transaction(request: TransactionCheckRequest):
-    """
-    Real-time transaction decision endpoint.
-
-    Flow:
-      1) Update graph incrementally
-      2) Compute hybrid score (GNN cache + rules + device/IP intel)
-            3) Return action (ALLOW/MONITOR/BLOCK/FREEZE)
-      4) Write tamper-evident audit block
-    """
-    try:
-        result = _process_transaction(request)
-        return TransactionDecisionResponse(**result)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/transaction/simulate-stream")
-async def simulate_stream(request: StreamSimulationRequest = StreamSimulationRequest()):
-    """
-    Simulate streaming transactions and return decision summary.
-    """
-    G = state.get("nx_graph")
-    if G is None:
-        raise HTTPException(status_code=400, detail="Graph not built. Run /api/ingest or /api/pipeline/run first.")
-
-    accounts = [n for n, d in G.nodes(data=True) if d.get("entity_type") == "Account"]
-    if len(accounts) < 2:
-        raise HTTPException(status_code=400, detail="Not enough account nodes for simulation.")
-
-    decisions = {
-        "ALLOW": 0,
-        "MONITOR": 0,
-        "BLOCK": 0,
-        "FREEZE": 0,
-    }
-    samples = []
-
-    for i in range(request.num_transactions):
-        src = random.choice(accounts)
-        dst = random.choice(accounts)
-        while dst == src:
-            dst = random.choice(accounts)
-
-        txn = TransactionCheckRequest(
-            transaction_id=f"SIM-{int(time.time() * 1000)}-{i}",
-            source_id=src,
-            target_id=dst,
-            amount=round(random.uniform(500, 150000), 2),
-            channel_type=random.choice(["UPI", "ATM", "WEB", "MOBILE_APP"]),
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            geo_location=random.choice(["Mumbai", "Delhi", "Lagos", "Dubai", "London"]),
-            device_id=f"DEV-SIM-{random.randint(100, 999)}",
-            ip_address=f"10.20.{random.randint(0, 255)}.{random.randint(1, 254)}",
-        )
-
-        result = _process_transaction(txn)
-        decisions[result["decision"]] = decisions.get(result["decision"], 0) + 1
-        if len(samples) < 10:
-            samples.append(result)
-
-        if request.interval_ms > 0:
-            await asyncio.sleep(request.interval_ms / 1000)
-
-    return {
-        "status": "complete",
-        "processed": request.num_transactions,
-        "decision_distribution": decisions,
-        "sample_results": samples,
-    }
-
-
-@app.get("/api/ledger/verify")
-async def verify_ledger():
-    """Verify integrity of the tamper-evident audit ledger."""
-    try:
-        ledger = FraudLedger(LEDGER_FILE)
-        return ledger.verify()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/ledger/recent")
-async def recent_ledger_entries(limit: int = 20):
-    """Get recent ledger blocks for audit review."""
-    try:
-        ledger = FraudLedger(LEDGER_FILE)
-        return {
-            "entries": ledger.recent(limit=limit),
-            "limit": limit,
-            "file": LEDGER_FILE,
-        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
