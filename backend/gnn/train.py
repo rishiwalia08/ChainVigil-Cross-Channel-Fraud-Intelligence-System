@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import (
     roc_auc_score, f1_score, precision_score,
-    recall_score, classification_report
+    recall_score, classification_report, precision_recall_curve
 )
 from torch_geometric.data import Data
 
@@ -140,7 +140,13 @@ class Trainer:
 
         probs_np = probs[mask].cpu().numpy()
         labels_np = self.data.y[mask].cpu().numpy()
-        preds = (probs_np > 0.5).astype(int)
+        
+        # Dynamic thresholding for optimal F1
+        # (Resolves the over-prediction trap caused by BCE pos_weight)
+        precisions, recalls, thresholds = precision_recall_curve(labels_np, probs_np)
+        f1_scores = 2 * (precisions * recalls) / (precisions + recalls + 1e-10)
+        best_threshold = thresholds[np.argmax(f1_scores)] if len(thresholds) > 0 else 0.5
+        preds = (probs_np > best_threshold).astype(int)
 
         try:
             auc = roc_auc_score(labels_np, probs_np)
