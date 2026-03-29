@@ -658,6 +658,134 @@ async def run_full_pipeline():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ─── Financial Crime Pattern Detection ─────────────────────────
+
+@app.get("/api/patterns")
+async def get_patterns():
+    """Detect structuring, fragmentation, nesting, and circular flow patterns."""
+    from backend.risk.patterns import PatternDetector
+    import json, os
+
+    if state["nx_graph"] is None:
+        raise HTTPException(status_code=400, detail="Run pipeline first (/api/pipeline/run)")
+
+    # Load transactions for pattern analysis
+    tx_file = os.path.join(
+        os.path.dirname(__file__), "data", "sample_data", "transactions.json"
+    )
+    transactions = []
+    if os.path.exists(tx_file):
+        with open(tx_file) as f:
+            transactions = json.load(f)
+
+    detector = PatternDetector(state["nx_graph"], transactions)
+    result = detector.run_all(transactions)
+    state["patterns"] = result
+    return result
+
+
+# ─── Sanctions Screening ────────────────────────────────────────
+
+@app.get("/api/sanctions/summary")
+async def get_sanctions_summary():
+    """Run behaviour-based sanctions screening on all flagged accounts."""
+    from backend.risk.sanctions import SanctionsScreener
+
+    if state["risk_scores"] is None:
+        raise HTTPException(status_code=400, detail="Run pipeline first (/api/pipeline/run)")
+
+    screener = SanctionsScreener()
+    result = screener.screen_all(state["risk_scores"])
+    state["sanctions"] = result
+    return result
+
+
+@app.get("/api/sanctions/check/{account_id}")
+async def check_sanctions(account_id: str):
+    """Screen a single account against watchlist and behavioural fingerprints."""
+    from backend.risk.sanctions import SanctionsScreener
+
+    risk_data = {}
+    if state["risk_scores"]:
+        for r in state["risk_scores"]:
+            if r.get("account_id") == account_id:
+                risk_data = r
+                break
+
+    screener = SanctionsScreener()
+    return screener.screen_account(account_id, risk_data)
+
+
+# ─── FIU-IND SAR Report ─────────────────────────────────────────
+
+@app.get("/api/report/sar")
+async def get_sar_report():
+    """Generate FIU-IND compliant Suspicious Activity Report (SAR)."""
+    from backend.xai.report import generate_sar_report
+
+    if state["risk_summary"] is None:
+        raise HTTPException(status_code=400, detail="Run pipeline first (/api/pipeline/run)")
+
+    # Run patterns + sanctions if not already done
+    if state.get("patterns") is None:
+        try:
+            await get_patterns()
+        except Exception:
+            pass
+
+    if state.get("sanctions") is None:
+        try:
+            await get_sanctions_summary()
+        except Exception:
+            pass
+
+    graph_stats = None
+    if state["nx_graph"] is not None:
+        G = state["nx_graph"]
+        graph_stats = {
+            "nodes": G.number_of_nodes(),
+            "edges": G.number_of_edges(),
+        }
+
+    sar = generate_sar_report(
+        risk_summary=state["risk_summary"],
+        patterns=state.get("patterns"),
+        sanctions=state.get("sanctions"),
+        graph_stats=graph_stats,
+    )
+    return sar
+
+
+# ─── SSE: Real-Time Live Transaction Feed ───────────────────────
+
+from fastapi.responses import StreamingResponse
+
+@app.get("/api/stream/live")
+async def live_transaction_stream():
+    """
+    Server-Sent Events (SSE) real-time transaction feed.
+    Streams one scored transaction every 2 seconds.
+    Frontend subscribes with EventSource('/api/stream/live').
+    """
+    from backend.realtime.processor import live_transaction_generator
+    return StreamingResponse(
+        live_transaction_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.get("/api/stream/recent")
+async def get_recent_live_events():
+    """Return the last 50 live events from the ring buffer (for initial load)."""
+    from backend.realtime.processor import get_recent_events
+    return {"events": get_recent_events(50)}
+
+
 # ─── Catch-all: React SPA routing ────────────────────────────
 # Must be LAST route so it doesn't override API routes above
 
@@ -670,3 +798,4 @@ async def spa_fallback(request: Request, full_path: str):
     if index_file.exists():
         return FileResponse(str(index_file))
     raise HTTPException(status_code=404, detail=f"Path /{full_path} not found")
+

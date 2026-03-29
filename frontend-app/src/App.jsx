@@ -25,8 +25,16 @@ function App() {
   const [graphData, setGraphData] = useState(null)
   const [graphLoading, setGraphLoading] = useState(false)
   const [hoveredNode, setHoveredNode] = useState(null)
-  const graphRef = useRef(null)
+  const [graphRef] = [useRef(null)]
+  const graphRefActual = useRef(null)
   const logRef = useRef(null)
+  const [patterns, setPatterns] = useState(null)
+  const [sanctions, setSanctions] = useState(null)
+  const [sarReport, setSarReport] = useState(null)
+  const [liveEvents, setLiveEvents] = useState([])
+  const [liveConnected, setLiveConnected] = useState(false)
+  const eventSourceRef = useRef(null)
+
 
   useEffect(() => {
     if (logRef.current) {
@@ -160,6 +168,56 @@ function App() {
     } catch { /* */ } finally { setGraphLoading(false) }
   }
 
+  const fetchPatterns = async () => {
+    addLog('Running financial crime pattern detection...', 'info')
+    try {
+      const res = await apiCall('/api/patterns', 'GET')
+      setPatterns(res)
+      addLog(`✅ ${res.total_patterns_detected} patterns detected`, 'success')
+    } catch { /* */ }
+  }
+
+  const fetchSanctions = async () => {
+    addLog('Running behaviour-based sanctions screening...', 'info')
+    try {
+      const res = await apiCall('/api/sanctions/summary', 'GET')
+      setSanctions(res)
+      addLog(`✅ Sanctions screening complete: ${res.total_alerts} alerts`, 'success')
+    } catch { /* */ }
+  }
+
+  const fetchSAR = async () => {
+    addLog('Generating FIU-IND SAR report...', 'info')
+    try {
+      const res = await apiCall('/api/report/sar', 'GET')
+      setSarReport(res)
+      addLog('✅ SAR report generated', 'success')
+    } catch { /* */ }
+  }
+
+  const startLiveFeed = () => {
+    if (eventSourceRef.current) return
+    const es = new EventSource(`${API_BASE}/api/stream/live`)
+    es.onopen = () => setLiveConnected(true)
+    es.onmessage = (e) => {
+      try {
+        const tx = JSON.parse(e.data)
+        setLiveEvents(prev => [tx, ...prev].slice(0, 80))
+      } catch {}
+    }
+    es.onerror = () => { setLiveConnected(false) }
+    eventSourceRef.current = es
+  }
+
+  const stopLiveFeed = () => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close()
+      eventSourceRef.current = null
+      setLiveConnected(false)
+    }
+  }
+
+
   // ─── Helpers ─────────────────────────────────────────────
 
   const getRiskColor = (score) => {
@@ -207,8 +265,10 @@ function App() {
           { id: 'graph', icon: '🔗', label: 'Graph' },
           { id: 'accounts', icon: '👤', label: 'Accounts' },
           { id: 'clusters', icon: '🕸️', label: 'Clusters' },
+          { id: 'patterns', icon: '🔍', label: 'Patterns' },
+          { id: 'livefeed', icon: '📡', label: 'Live Feed' },
           { id: 'xai', icon: '🧠', label: 'XAI Auditor' },
-          { id: 'report', icon: '📄', label: 'Reports' },
+          { id: 'sar', icon: '📋', label: 'SAR Report' },
         ].map(tab => (
           <button
             key={tab.id}
@@ -786,6 +846,250 @@ function App() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Footer */}
+      {/* ── Patterns Tab ── */}
+      {activeTab === 'patterns' && (
+        <div className="tab-content">
+          <div className="section-card">
+            <div className="section-header">
+              <h2 className="section-title">🔍 Financial Crime Pattern Detection</h2>
+              <button className="btn btn-primary" onClick={fetchPatterns}>
+                {patterns ? '🔄 Refresh' : '🔍 Run Detection'}
+              </button>
+            </div>
+            {!patterns ? (
+              <div className="empty-state">
+                <div style={{ fontSize: 48 }}>🔍</div>
+                <h3>Pattern Detection Not Run</h3>
+                <p>Run the pipeline first, then click "Run Detection" to detect structuring, fragmentation, nesting, and circular flow patterns.</p>
+              </div>
+            ) : (
+              <div>
+                <div className="stats-grid" style={{ marginBottom: 24 }}>
+                  {[
+                    { label: 'Structuring Cases', value: patterns.structuring_cases, color: '#ef4444' },
+                    { label: 'Fragmentation Cases', value: patterns.fragmentation_cases, color: '#f97316' },
+                    { label: 'Nesting Cases', value: patterns.nesting_cases, color: '#eab308' },
+                    { label: 'Circular Flow Cases', value: patterns.circular_flow_cases, color: '#8b5cf6' },
+                  ].map(s => (
+                    <div key={s.label} className="stat-card" style={{ borderTop: `3px solid ${s.color}` }}>
+                      <div className="stat-value" style={{ color: s.color }}>{s.value}</div>
+                      <div className="stat-label">{s.label}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {patterns.patterns?.slice(0, 20).map((p, i) => (
+                    <div key={i} className="account-card" style={{ borderLeft: `4px solid ${p.confidence_score >= 80 ? '#ef4444' : p.confidence_score >= 60 ? '#f97316' : '#eab308'}` }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8 }}>
+                        <div>
+                          <span style={{ fontWeight: 700, color: 'var(--text-primary)', marginRight: 10 }}>{p.pattern_type}</span>
+                          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{p.account_id}</span>
+                        </div>
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <span style={{ background: p.confidence_score >= 80 ? '#ef444422' : '#f9731622', color: p.confidence_score >= 80 ? '#ef4444' : '#f97316', padding: '2px 10px', borderRadius: 20, fontWeight: 700, fontSize: 13 }}>
+                            {p.confidence_score}% confidence
+                          </span>
+                          <span style={{ fontSize: 11, background: 'var(--surface-elevated)', padding: '2px 8px', borderRadius: 12, color: 'var(--text-secondary)' }}>
+                            {p.recommended_action}
+                          </span>
+                        </div>
+                      </div>
+                      <p style={{ margin: '8px 0 4px', fontSize: 13, color: 'var(--text-secondary)' }}>{p.evidence}</p>
+                      <p style={{ margin: 0, fontSize: 11, color: 'var(--text-muted)', fontStyle: 'italic' }}>📜 {p.regulatory_ref}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Live Feed Tab ── */}
+      {activeTab === 'livefeed' && (
+        <div className="tab-content">
+          <div className="section-card">
+            <div className="section-header">
+              <h2 className="section-title">📡 Real-Time Transaction Feed</h2>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: liveConnected ? '#22c55e' : '#6b7280', display: 'inline-block' }} />
+                  {liveConnected ? 'LIVE' : 'Disconnected'}
+                </span>
+                {!liveConnected
+                  ? <button className="btn btn-primary" onClick={startLiveFeed}>▶ Start Feed</button>
+                  : <button className="btn btn-secondary" onClick={stopLiveFeed}>⏹ Stop</button>
+                }
+              </div>
+            </div>
+            <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>
+              Live UPI/ATM/NEFT/RTGS transactions scored in real-time by the rule engine. Color-coded by risk level.
+            </p>
+            {liveEvents.length === 0 ? (
+              <div className="empty-state">
+                <div style={{ fontSize: 48 }}>📡</div>
+                <h3>Feed Not Started</h3>
+                <p>Click "Start Feed" to begin streaming live transaction events.</p>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 600, overflowY: 'auto' }}>
+                {liveEvents.map((evt, i) => (
+                  <div key={i} style={{
+                    display: 'grid', gridTemplateColumns: '60px 1fr 1fr 1fr 90px', gap: 10,
+                    alignItems: 'center', padding: '10px 14px', borderRadius: 8,
+                    background: evt.severity === 'CRITICAL' ? '#ef444410' : evt.severity === 'HIGH' ? '#f9731610' : evt.severity === 'MEDIUM' ? '#eab30810' : '#22c55e08',
+                    border: `1px solid ${evt.severity === 'CRITICAL' ? '#ef444430' : evt.severity === 'HIGH' ? '#f9731630' : evt.severity === 'MEDIUM' ? '#eab30830' : '#22c55e20'}`,
+                    fontSize: 12
+                  }}>
+                    <span style={{ fontFamily: 'monospace', color: 'var(--text-muted)', fontSize: 10 }}>
+                      {evt.timestamp?.slice(11, 19)}
+                    </span>
+                    <span>
+                      <span style={{ fontWeight: 600 }}>{evt.sender_id}</span>
+                      <span style={{ color: 'var(--text-muted)' }}> → {evt.receiver_id}</span>
+                    </span>
+                    <span style={{ fontWeight: 700, color: evt.risk_score >= 75 ? '#ef4444' : evt.risk_score >= 45 ? '#f97316' : '#22c55e' }}>
+                      ₹{Number(evt.amount).toLocaleString('en-IN')}
+                    </span>
+                    <span style={{ color: 'var(--text-secondary)' }}>{evt.channel}</span>
+                    <span style={{
+                      padding: '2px 8px', borderRadius: 12, textAlign: 'center', fontWeight: 700, fontSize: 11,
+                      background: evt.severity === 'CRITICAL' ? '#ef4444' : evt.severity === 'HIGH' ? '#f97316' : evt.severity === 'MEDIUM' ? '#eab308' : '#22c55e',
+                      color: 'white'
+                    }}>
+                      {evt.severity}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── SAR Report Tab ── */}
+      {activeTab === 'sar' && (
+        <div className="tab-content">
+          <div className="section-card">
+            <div className="section-header">
+              <h2 className="section-title">📋 FIU-IND Suspicious Activity Report</h2>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button className="btn btn-primary" onClick={fetchSAR}>
+                  {sarReport ? '🔄 Regenerate SAR' : '📋 Generate SAR'}
+                </button>
+              </div>
+            </div>
+            {!sarReport ? (
+              <div className="empty-state">
+                <div style={{ fontSize: 48 }}>📋</div>
+                <h3>SAR Not Generated</h3>
+                <p>Run the pipeline first, then click "Generate SAR" to produce a FIU-IND compliant Suspicious Activity Report.</p>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                {/* Report Header */}
+                <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: 20 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+                    <div>
+                      <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 1 }}>Suspicious Activity Report</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: 'white', marginTop: 4 }}>
+                        {sarReport.report_header?.sar_reference_number}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
+                        {sarReport.report_header?.generated_at?.slice(0, 10)} · {sarReport.report_header?.reporting_entity}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <span style={{
+                        padding: '6px 16px', borderRadius: 20, fontWeight: 700, fontSize: 13,
+                        background: sarReport.executive_summary?.priority_level === 'CRITICAL' ? '#ef4444' : '#f97316',
+                        color: 'white'
+                      }}>
+                        {sarReport.executive_summary?.priority_level}
+                      </span>
+                      <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 8 }}>
+                        Confidence: {sarReport.executive_summary?.overall_risk_confidence_score}% ({sarReport.executive_summary?.overall_risk_confidence_label})
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Executive Summary */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
+                  {[
+                    { label: 'Accounts Analyzed', value: sarReport.executive_summary?.total_accounts_analyzed },
+                    { label: 'Mule Accounts', value: sarReport.executive_summary?.mule_accounts_flagged, color: '#ef4444' },
+                    { label: 'Ring Clusters', value: sarReport.executive_summary?.mule_ring_clusters_detected, color: '#f97316' },
+                    { label: 'Crime Patterns', value: sarReport.executive_summary?.financial_crime_patterns_detected, color: '#eab308' },
+                    { label: 'Sanctions Alerts', value: sarReport.executive_summary?.sanctions_alerts, color: '#8b5cf6' },
+                  ].map(s => (
+                    <div key={s.label} className="stat-card">
+                      <div className="stat-value" style={{ color: s.color || 'var(--text-primary)' }}>{s.value ?? '—'}</div>
+                      <div className="stat-label">{s.label}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Recommended Actions */}
+                <div style={{ background: 'var(--surface-elevated)', borderRadius: 10, padding: 16 }}>
+                  <h3 style={{ margin: '0 0 12px', fontSize: 14, color: 'var(--text-secondary)' }}>📌 Recommended Regulatory Actions</h3>
+                  <ul style={{ margin: 0, padding: '0 0 0 18px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {sarReport.executive_summary?.recommended_regulatory_actions?.map((a, i) => (
+                      <li key={i} style={{ fontSize: 13, color: 'var(--text-primary)' }}>{a}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                {/* Suspicious Subjects */}
+                {sarReport.suspicious_subjects?.length > 0 && (
+                  <div>
+                    <h3 style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 10 }}>🚨 Suspicious Subjects ({sarReport.suspicious_subjects.length})</h3>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {sarReport.suspicious_subjects.slice(0, 10).map((subj, i) => (
+                        <div key={i} className="account-card" style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 12, alignItems: 'center' }}>
+                          <div>
+                            <div style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--text-muted)' }}>{subj.subject_reference}</div>
+                            <div style={{ fontSize: 13, marginTop: 4 }}>
+                              Activity: <strong>{subj.suspicious_activity_types?.join(', ')}</strong>
+                              {subj.sanctions_alert && <span style={{ marginLeft: 8, color: '#ef4444', fontWeight: 700 }}>⚠️ SANCTIONS HIT</span>}
+                            </div>
+                            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+                              Filing: {subj.regulatory_filing}
+                            </div>
+                          </div>
+                          <div style={{ textAlign: 'right' }}>
+                            <div style={{ fontWeight: 700, color: subj.risk_score >= 80 ? '#ef4444' : '#f97316', fontSize: 20 }}>
+                              {subj.risk_score}%
+                            </div>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{subj.recommended_action}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Regulatory Framework */}
+                <div style={{ background: 'var(--surface-elevated)', borderRadius: 10, padding: 16 }}>
+                  <h3 style={{ margin: '0 0 10px', fontSize: 13, color: 'var(--text-muted)' }}>📜 Regulatory Framework</h3>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {sarReport.report_header?.regulatory_framework?.map((r, i) => (
+                      <span key={i} style={{ background: '#1e293b', border: '1px solid #334155', padding: '3px 10px', borderRadius: 12, fontSize: 11, color: '#94a3b8' }}>
+                        {r}
+                      </span>
+                    ))}
+                  </div>
+                  <p style={{ margin: '14px 0 0', fontSize: 11, color: '#64748b', fontStyle: 'italic' }}>
+                    {sarReport.report_header?.classification}
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 

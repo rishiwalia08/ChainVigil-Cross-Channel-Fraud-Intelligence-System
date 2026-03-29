@@ -1,130 +1,153 @@
-import hashlib
-from datetime import datetime, timezone
-from typing import Any, Dict, List
+"""
+ChainVigil — Real-Time Transaction Stream Processor
 
-from backend.realtime.action_engine import ActionEngine
-from backend.realtime.blockchain import FraudLedger
-from backend.realtime.rule_engine import RuleEngine
+Provides:
+1. SSE (Server-Sent Events) live feed endpoint — streams synthetic
+   transactions to the frontend every 2 seconds, scored by rule engine
+2. Transaction event scoring against rule thresholds
+3. In-memory ring buffer of last 100 events for the "Live Feed" UI tab
+"""
 
+import asyncio
+import json
+import random
+from datetime import datetime
+from collections import deque
+from typing import Dict, AsyncGenerator
 
-class DeviceIpIntel:
-    def score(self, txn, G) -> Dict[str, Any]:
-        score = 0.0
-        reasons: List[str] = []
+# Rule thresholds for real-time pre-scoring
+HIGH_AMOUNT_THRESHOLD = 500_000      # ₹5L+ = immediate flag
+CTR_THRESHOLD = 1_000_000            # ₹10L CTR band
+VELOCITY_FLAG_SECONDS = 300          # < 5 min between transactions = velocity flag
+HIGH_RISK_CHANNELS = {"ATM", "UPI"}  # Channels with higher mule risk weight
 
-        if txn.device_id and txn.device_id in G:
-            users = {
-                src for src, _, d in G.in_edges(txn.device_id, data=True)
-                if d.get("edge_type") == "USED_DEVICE"
-            }
-            if len(users) >= 6:
-                score += 0.25
-                reasons.append("device_shared_many_accounts")
-            elif len(users) >= 3:
-                score += 0.12
-                reasons.append("device_shared_multiple_accounts")
+CHANNELS = ["UPI", "ATM", "WEB", "MOBILE_APP", "NEFT", "RTGS", "IMPS"]
+CHANNEL_RISK = {
+    "ATM": 0.7, "UPI": 0.6, "MOBILE_APP": 0.5,
+    "WEB": 0.4, "NEFT": 0.3, "RTGS": 0.3, "IMPS": 0.4,
+}
 
-        if txn.ip_address and txn.ip_address in G:
-            users = {
-                src for src, _, d in G.in_edges(txn.ip_address, data=True)
-                if d.get("edge_type") == "LOGGED_FROM"
-            }
-            if len(users) >= 8:
-                score += 0.25
-                reasons.append("ip_shared_many_accounts")
-            elif len(users) >= 4:
-                score += 0.12
-                reasons.append("ip_shared_multiple_accounts")
+# In-memory ring buffer of recent live events (last 100)
+live_event_buffer: deque = deque(maxlen=100)
 
-        return {
-            "score": min(1.0, round(score, 4)),
-            "reasons": reasons,
-        }
+# Track account velocity (last tx timestamp per account)
+_last_tx_time: Dict[str, datetime] = {}
 
 
-class HybridScorer:
-    def __init__(self, w_gnn: float = 0.55, w_rule: float = 0.3, w_intel: float = 0.15):
-        self.w_gnn = w_gnn
-        self.w_rule = w_rule
-        self.w_intel = w_intel
+def _generate_live_transaction() -> Dict:
+    """Generate a realistic synthetic transaction for the live feed."""
+    acc_count = 150
+    sender = f"ACC-{random.randint(1, acc_count):03d}"
+    receiver = f"ACC-{random.randint(1, acc_count):03d}"
+    while receiver == sender:
+        receiver = f"ACC-{random.randint(1, acc_count):03d}"
 
-    def combine(self, gnn_score: float, rule_score: float, intel_score: float) -> float:
-        score = (
-            self.w_gnn * gnn_score
-            + self.w_rule * rule_score
-            + self.w_intel * intel_score
-        )
-        return min(1.0, round(score, 4))
+    channel = random.choices(
+        CHANNELS,
+        weights=[25, 20, 15, 15, 10, 10, 5],
+        k=1
+    )[0]
+
+    # 5% chance of suspiciously high amount
+    if random.random() < 0.05:
+        amount = random.uniform(900_000, 999_000)   # Structuring band
+    elif random.random() < 0.08:
+        amount = random.uniform(500_000, 1_200_000)  # High value
+    else:
+        amount = random.uniform(1_000, 150_000)      # Normal
+
+    return {
+        "tx_id": f"TX-{datetime.now().strftime('%H%M%S')}-{random.randint(1000,9999)}",
+        "sender_id": sender,
+        "receiver_id": receiver,
+        "amount": round(amount, 2),
+        "channel": channel,
+        "timestamp": datetime.now().isoformat(),
+        "reference": f"REF{random.randint(100000, 999999)}",
+    }
 
 
-class RealTimeProcessor:
-    """Processes a transaction with graph update -> scoring -> action -> ledger."""
+def _score_live_transaction(tx: Dict) -> Dict:
+    """
+    Real-time rule engine scoring of a live transaction.
+    Returns risk flags, score, and severity level.
+    """
+    flags = []
+    risk_score = 0.0
+    amount = tx.get("amount", 0)
+    channel = tx.get("channel", "")
+    sender = tx.get("sender_id", "")
+    now = datetime.now()
 
-    def __init__(self, graph_builder, graph, ledger_file: str, ledger_salt: str = "chainvigil-ledger-salt"):
-        self.graph_builder = graph_builder
-        self.G = graph
-        self.ledger = FraudLedger(ledger_file)
-        self.ledger_salt = ledger_salt
-        self.rule_engine = RuleEngine()
-        self.intel_engine = DeviceIpIntel()
-        self.hybrid_scorer = HybridScorer()
-        self.action_engine = ActionEngine()
+    # Rule 1: High amount
+    if amount >= CTR_THRESHOLD:
+        flags.append(f"CTR_THRESHOLD_BREACH: ₹{amount:,.0f} exceeds ₹10L reporting limit")
+        risk_score += 0.5
+    elif 900_000 <= amount < CTR_THRESHOLD:
+        flags.append(f"STRUCTURING_ALERT: ₹{amount:,.0f} is in ₹9L–₹10L structuring band")
+        risk_score += 0.45
 
-    def _anon(self, account_id: str) -> str:
-        return hashlib.sha256(f"{self.ledger_salt}:{account_id}".encode()).hexdigest()[:16]
+    elif amount >= HIGH_AMOUNT_THRESHOLD:
+        flags.append(f"HIGH_VALUE: ₹{amount:,.0f} exceeds ₹5L alert threshold")
+        risk_score += 0.25
 
-    def _estimate_gnn_score(self, txn, risk_lookup: Dict[str, Dict[str, Any]]) -> float:
-        src = risk_lookup.get(txn.source_id, {}).get("mule_probability")
-        dst = risk_lookup.get(txn.target_id, {}).get("mule_probability")
-        known = [s for s in [src, dst] if isinstance(s, (int, float))]
-        if known:
-            return round(float(max(known)), 4)
-        return 0.5 if txn.amount < 25000 else 0.62
+    # Rule 2: Channel risk weight
+    cr = CHANNEL_RISK.get(channel, 0.2)
+    risk_score += cr * 0.2
 
-    def process(self, txn, risk_lookup: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-        self.graph_builder.add_transaction_live(
-            source_id=txn.source_id,
-            target_id=txn.target_id,
-            transaction_id=txn.transaction_id,
-            amount=txn.amount,
-            channel_type=txn.channel_type,
-            timestamp=txn.timestamp or datetime.now(timezone.utc).isoformat(),
-            geo_location=txn.geo_location,
-            device_id=txn.device_id,
-            ip_address=txn.ip_address,
-            is_suspicious=False,
-        )
+    # Rule 3: Velocity check
+    if sender in _last_tx_time:
+        elapsed = (now - _last_tx_time[sender]).total_seconds()
+        if elapsed < VELOCITY_FLAG_SECONDS:
+            flags.append(f"HIGH_VELOCITY: {elapsed:.0f}s since last tx from {sender}")
+            risk_score += 0.3
 
-        gnn_score = self._estimate_gnn_score(txn, risk_lookup)
-        rule_out = self.rule_engine.evaluate(txn, self.G, risk_lookup)
-        intel_out = self.intel_engine.score(txn, self.G)
-        hybrid_score = self.hybrid_scorer.combine(gnn_score, rule_out["score"], intel_out["score"])
-        decision = self.action_engine.decide(hybrid_score, hard_block=rule_out["hard_block"])
+    _last_tx_time[sender] = now
 
-        reasons = list(dict.fromkeys(rule_out["reasons"] + intel_out["reasons"]))
-        payload = {
-            "transaction_id": txn.transaction_id,
-            "source_anon": self._anon(txn.source_id),
-            "target_anon": self._anon(txn.target_id),
-            "amount": txn.amount,
-            "channel_type": txn.channel_type,
-            "gnn_score": gnn_score,
-            "rule_score": rule_out["score"],
-            "intel_score": intel_out["score"],
-            "hybrid_score": hybrid_score,
-            "decision": decision,
-            "reasons": reasons,
-        }
-        ledger_tx_id = self.ledger.append(payload)
+    # Clamp
+    risk_score = min(1.0, risk_score)
 
-        return {
-            "transaction_id": txn.transaction_id,
-            "gnn_score": gnn_score,
-            "rule_score": rule_out["score"],
-            "intel_score": intel_out["score"],
-            "hybrid_score": hybrid_score,
-            "decision": decision,
-            "reasons": reasons,
-            "ledger_tx_id": ledger_tx_id,
-            "processed_at": datetime.now(timezone.utc).isoformat(),
-        }
+    if risk_score >= 0.75:
+        severity = "CRITICAL"
+        color = "red"
+    elif risk_score >= 0.45:
+        severity = "HIGH"
+        color = "orange"
+    elif risk_score >= 0.2:
+        severity = "MEDIUM"
+        color = "yellow"
+    else:
+        severity = "LOW"
+        color = "green"
+
+    return {
+        **tx,
+        "risk_score": round(risk_score * 100, 1),
+        "risk_flags": flags,
+        "severity": severity,
+        "color": color,
+        "confidence": f"{min(99, int(risk_score * 100))}%",
+        "channel_risk_weight": cr,
+    }
+
+
+async def live_transaction_generator() -> AsyncGenerator[str, None]:
+    """
+    Async generator that yields scored transactions as SSE events.
+    Used by the /api/stream/live endpoint.
+    """
+    while True:
+        tx = _generate_live_transaction()
+        scored = _score_live_transaction(tx)
+        live_event_buffer.appendleft(scored)
+
+        # SSE format: data: <json>\n\n
+        sse_data = f"data: {json.dumps(scored)}\n\n"
+        yield sse_data
+
+        await asyncio.sleep(2)  # One event every 2 seconds
+
+
+def get_recent_events(limit: int = 50) -> list:
+    """Return recent live events from ring buffer."""
+    return list(live_event_buffer)[:limit]
