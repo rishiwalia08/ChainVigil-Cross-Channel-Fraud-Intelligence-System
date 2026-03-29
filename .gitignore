@@ -10,4 +10,3 @@ backend/data/sample_data/
 backend/data/reports/
 backend/gnn/saved_models/
 frontend-app/node_modules/
-frontend-app/dist/
