@@ -9,8 +9,8 @@ NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "chainvigil")
 
 # ─── Data Generation Defaults ───────────────────────────────────────
-NUM_ACCOUNTS = int(os.getenv("NUM_ACCOUNTS", "250"))
-NUM_TRANSACTIONS = int(os.getenv("NUM_TRANSACTIONS", "1250"))
+NUM_ACCOUNTS = int(os.getenv("NUM_ACCOUNTS", "500"))
+NUM_TRANSACTIONS = int(os.getenv("NUM_TRANSACTIONS", "2500"))
 NUM_MULE_RINGS = int(os.getenv("NUM_MULE_RINGS", "5"))
 MULE_RING_SIZE_RANGE = (4, 8)
 
@@ -19,10 +19,10 @@ CHANNELS = ["UPI", "ATM", "WEB", "MOBILE_APP"]
 
 # ─── GNN Configuration ─────────────────────────────────────────────
 GNN_HIDDEN_DIM = 64
-GNN_NUM_LAYERS = 2
-GNN_LEARNING_RATE = 0.01
-GNN_EPOCHS = 100
-GNN_DROPOUT = 0.1
+GNN_NUM_LAYERS = 3
+GNN_LEARNING_RATE = 0.005
+GNN_EPOCHS = 200
+GNN_DROPOUT = 0.3
 RISK_THRESHOLD = 0.85
 
 # ─── Paths ──────────────────────────────────────────────────────────
