@@ -93,10 +93,9 @@ async def shutdown():
 
 # ─── Health & Info ─────────────────────────────────────────────
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
     return {"status": "healthy"}
-
 
 @app.get("/api/status")
 async def api_status():
@@ -113,7 +112,7 @@ async def api_status():
     }
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
     """Serve React frontend index.html, or fallback API info."""
     index_file = FRONTEND_DIST / "index.html"
