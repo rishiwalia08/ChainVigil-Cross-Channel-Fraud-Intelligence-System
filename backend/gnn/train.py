@@ -57,7 +57,7 @@ class Trainer:
             self.model.parameters(), lr=lr, weight_decay=5e-4
         )
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode="max", patience=20, factor=0.5
+            self.optimizer, mode="max", patience=5, factor=0.5
         )
 
         # Move data to device
