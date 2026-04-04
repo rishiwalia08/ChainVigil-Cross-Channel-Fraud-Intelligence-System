@@ -14,7 +14,10 @@ import os
 import json
 import asyncio
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
+
+# ── Observability (Step 1) ────────────────────────────────────────────────────
+from backend.observability.metrics import METRICS, timer, log_prediction
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -110,6 +113,27 @@ async def api_status():
         "init_status": state["init_status"],
         "init_error": state["init_error"],
     }
+
+
+# ─── Step 1: Observability — /metrics endpoint ─────────────────────────────
+
+@app.get("/metrics")
+async def get_metrics(format: str = "json"):
+    """
+    Expose system metrics.
+    ?format=prometheus  → Prometheus text exposition format (for Grafana scrape)
+    ?format=json        → Pretty JSON (default, for dashboard widgets)
+
+    Suggested Grafana dashboard panels:
+      - chainvigil_gauge_fraud_rate          → Stat panel (fraud %)
+      - chainvigil_gauge_flagged_accounts    → Stat panel
+      - chainvigil_latency_inference_p95     → Time series (ms)
+      - chainvigil_counter_total_predictions → Counter / rate
+    """
+    if format == "prometheus":
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse(METRICS.prometheus_text(), media_type="text/plain")
+    return METRICS.snapshot()
 
 
 @app.api_route("/", methods=["GET", "HEAD"])
@@ -333,11 +357,12 @@ async def run_risk_analysis():
         from backend.risk.engine import RiskIntelligenceEngine
 
         # Get predictions
-        risk_scores = predict_scores(
-            state["trainer"].model,
-            state["pyg_data"],
-            state["account_ids"],
-        )
+        with timer("inference_latency_ms"):
+            risk_scores = predict_scores(
+                state["trainer"].model,
+                state["pyg_data"],
+                state["account_ids"],
+            )
         state["risk_scores"] = risk_scores
 
         # Run risk engine
@@ -346,6 +371,25 @@ async def run_risk_analysis():
         )
         summary = engine.analyze()
         state["risk_summary"] = summary
+
+        # ── Step 1: Update observability gauges ───────────────────────────
+        total = summary["total_accounts_analyzed"]
+        flagged = summary["flagged_accounts"]
+        METRICS.set_gauge("accounts_analyzed", total)
+        METRICS.set_gauge("flagged_accounts", flagged)
+        METRICS.set_gauge("clusters_detected", summary["clusters_detected"])
+        METRICS.set_gauge("fraud_rate", round(flagged / total, 4) if total else 0)
+        METRICS.set_gauge("model_auc", state["trainer"].best_val_auc
+                          if hasattr(state["trainer"], "best_val_auc") else 0)
+        METRICS.inc("analyze_runs")
+
+        # Log top predictions
+        for r in risk_scores[:20]:
+            log_prediction(
+                account_id=r["account_id"],
+                risk_score=r.get("mule_probability", 0),
+                action=r.get("recommended_action", "Unknown"),
+            )
 
         return PipelineStatus(
             stage="Risk Analysis",
@@ -753,6 +797,164 @@ async def get_sar_report():
         graph_stats=graph_stats,
     )
     return sar
+
+
+# ─── Intelligence Layer: Unified AI Analysis  (Steps 2–6) ─────────────────
+
+@app.get("/api/intelligence/analyze/{account_id}")
+async def intelligence_analyze(account_id: str, text: Optional[str] = None):
+    """
+    Full intelligence pipeline for a single account.
+
+    Combines:
+      • Temporal anomaly score    (Step 2)
+      • Behavioral risk profile   (Step 3)
+      • Root-cause explanation    (Step 4)
+      • Automated action decision (Step 5)
+      • NLP text analysis         (Step 6, pass ?text=<note>)
+
+    Returns a single unified decision object.
+    """
+    G = state["nx_graph"]
+    if G is None:
+        raise HTTPException(status_code=400, detail="Run pipeline first (/api/pipeline/run)")
+    if account_id not in G:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+
+    try:
+        from backend.intelligence.temporal   import TemporalAnomalyDetector
+        from backend.intelligence.behavioral  import BehavioralProfiler
+        from backend.intelligence.root_cause  import RootCauseEngine
+        from backend.intelligence.action_engine import AutomatedActionEngine
+        from backend.intelligence.nlp_detector  import NLPFraudDetector
+
+        # Step 2: Temporal
+        temporal_result = TemporalAnomalyDetector(G).score_account(account_id)
+
+        # Step 3: Behavioral
+        behavioral_result = BehavioralProfiler(G).profile_account(account_id)
+
+        # Step 6: NLP (optional — pass transaction note via ?text=)
+        nlp_result = NLPFraudDetector().analyze(text) if text else None
+
+        # Gather GNN score and existing XAI features
+        gnn_score = 0.0
+        xai_features = []
+        rule_reasons = []
+        cluster_id = None
+        high_risk_neighbors = 0
+
+        if state["risk_scores"]:
+            for r in state["risk_scores"]:
+                if r.get("account_id") == account_id:
+                    gnn_score = r.get("mule_probability", 0.0)
+                    break
+
+        if state["explanations"] and account_id in state["explanations"]:
+            xai = state["explanations"][account_id]
+            xai_features = xai.get("feature_attributions", [])
+
+        if state["risk_summary"]:
+            for cluster in state["risk_summary"].get("clusters", []):
+                if account_id in cluster.get("members", []):
+                    cluster_id = cluster["cluster_id"]
+                    high_risk_neighbors = cluster.get("size", 0) - 1
+                    break
+
+        # Step 4: Root-cause explanation
+        root_cause = RootCauseEngine().explain(
+            account_id=account_id,
+            gnn_score=gnn_score,
+            rule_reasons=rule_reasons,
+            xai_features=xai_features,
+            temporal_result=temporal_result,
+            behavioral_result=behavioral_result,
+            nlp_result=nlp_result,
+            cluster_id=cluster_id,
+            high_risk_neighbors=high_risk_neighbors,
+        )
+
+        # Step 5: Automated action decision
+        decision = AutomatedActionEngine().decide(
+            account_id=account_id,
+            final_score=root_cause["final_risk_score"],
+            explanation=root_cause["explanation"],
+            evidence=root_cause["evidence"],
+            risk_tier=root_cause["risk_tier"],
+        )
+
+        # Observability
+        METRICS.inc("intelligence_queries")
+        log_prediction(
+            account_id=account_id,
+            risk_score=root_cause["final_risk_score"],
+            action=decision["action"],
+            source="intelligence",
+        )
+
+        return {
+            "account_id":        account_id,
+            "gnn_score":         round(gnn_score, 4),
+            "temporal":          temporal_result,
+            "behavioral":        behavioral_result,
+            "nlp":               nlp_result,
+            "root_cause":        root_cause,
+            "decision":          decision,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/intelligence/nlp")
+async def nlp_analyze(payload: dict):
+    """
+    Analyze a transaction note or description for NLP fraud signals.  (Step 6)
+
+    Request body:
+        {"text": "<transaction description>",
+         "tx_id": "<optional>"}           # optional, for logging
+
+    Returns NLP fraud detection result.
+    """
+    from backend.intelligence.nlp_detector import NLPFraudDetector
+
+    text  = payload.get("text", "")
+    tx_id = payload.get("tx_id", "unknown")
+
+    result = NLPFraudDetector().analyze(text)
+    METRICS.inc("nlp_analyses")
+    if result["is_suspicious"]:
+        METRICS.inc("nlp_suspicious_flagged")
+
+    return {
+        "tx_id":  tx_id,
+        "input":  text[:200],          # truncate for response safety
+        **result,
+    }
+
+
+@app.get("/api/intelligence/temporal/{account_id}")
+async def temporal_analyze(account_id: str):
+    """Get temporal anomaly score for a single account.  (Step 2)"""
+    G = state["nx_graph"]
+    if G is None:
+        raise HTTPException(status_code=400, detail="Run graph build first.")
+    from backend.intelligence.temporal import TemporalAnomalyDetector
+    result = TemporalAnomalyDetector(G).score_account(account_id)
+    METRICS.inc("temporal_queries")
+    return {"account_id": account_id, **result}
+
+
+@app.get("/api/intelligence/behavioral/{account_id}")
+async def behavioral_analyze(account_id: str):
+    """Get behavioral risk profile for a single account.  (Step 3)"""
+    G = state["nx_graph"]
+    if G is None:
+        raise HTTPException(status_code=400, detail="Run graph build first.")
+    from backend.intelligence.behavioral import BehavioralProfiler
+    result = BehavioralProfiler(G).profile_account(account_id)
+    METRICS.inc("behavioral_queries")
+    return {"account_id": account_id, **result}
 
 
 # ─── SSE: Real-Time Live Transaction Feed ───────────────────────

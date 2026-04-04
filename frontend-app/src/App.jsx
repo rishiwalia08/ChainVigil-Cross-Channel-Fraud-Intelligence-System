@@ -4,6 +4,352 @@ import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE || ''
 
+// ─── Intelligence Tab Component ──────────────────────────────────────────────
+// Lives outside App so it can safely use hooks.
+function IntelligenceTab({
+  clusters, fetchClusters,
+  intelAccount, setIntelAccount,
+  intelText, setIntelText,
+  intelLoading, fetchIntelligence, intelResult,
+  nlpText, setNlpText, fetchNLP, nlpResult,
+  metricsData, fetchMetrics,
+}) {
+  // Fetch clusters when this tab first mounts (covers the case where
+  // the pipeline ran but clusters state is empty because the user refreshed)
+  useEffect(() => {
+    if (clusters.length === 0) fetchClusters()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const quickIds = clusters.flatMap(c => c.members || []).slice(0, 6)
+
+  const getRiskColor = (tier) => ({
+    CRITICAL: '#ef4444', HIGH: '#f97316', MEDIUM: '#eab308', LOW: '#22c55e'
+  })[tier] || '#6b7280'
+
+  return (
+    <div>
+      {/* ── Input row ── */}
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <div style={{ flex: 1, minWidth: 180 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 1 }}>Account ID</div>
+          <input
+            id="intel-account-input"
+            type="text"
+            placeholder="e.g. ACC-00042"
+            value={intelAccount}
+            onChange={e => setIntelAccount(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && fetchIntelligence()}
+            style={{
+              width: '100%', padding: '10px 14px',
+              background: 'var(--bg-tinted)', border: '1px solid var(--border-subtle)',
+              borderRadius: 8, color: 'var(--text-primary)', fontSize: 14,
+              fontFamily: "'JetBrains Mono', monospace", boxSizing: 'border-box'
+            }}
+          />
+        </div>
+        <div style={{ flex: 2, minWidth: 240 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 1 }}>Transaction Note (optional — NLP)</div>
+          <input
+            id="intel-text-input"
+            type="text"
+            placeholder="e.g. urgent advance fee split payment"
+            value={intelText}
+            onChange={e => setIntelText(e.target.value)}
+            style={{
+              width: '100%', padding: '10px 14px',
+              background: 'var(--bg-tinted)', border: '1px solid var(--border-subtle)',
+              borderRadius: 8, color: 'var(--text-primary)', fontSize: 14,
+              boxSizing: 'border-box'
+            }}
+          />
+        </div>
+        <button
+          id="btn-run-intelligence"
+          className="btn btn-primary"
+          onClick={fetchIntelligence}
+          disabled={intelLoading || !intelAccount.trim()}
+        >
+          {intelLoading ? <span className="spinner" /> : '🤖'} Analyze
+        </button>
+      </div>
+
+      {/* ── Quick-fill badges from cluster members ── */}
+      {quickIds.length > 0 && (
+        <div style={{ marginBottom: 20, padding: '10px 14px', background: 'var(--bg-tinted)', borderRadius: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+          💡 Click an account to auto-fill:{' '}
+          {quickIds.map(id => (
+            <button
+              key={id}
+              onClick={() => setIntelAccount(id)}
+              style={{
+                marginLeft: 6, padding: '2px 10px',
+                background: intelAccount === id ? '#dc2626' : '#fef2f2',
+                border: '1px solid #fecaca', borderRadius: 6,
+                fontSize: 11, fontFamily: "'JetBrains Mono', monospace",
+                color: intelAccount === id ? '#fff' : '#dc2626',
+                cursor: 'pointer', transition: 'all .15s'
+              }}
+            >{id}</button>
+          ))}
+        </div>
+      )}
+      {quickIds.length === 0 && (
+        <div style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--bg-tinted)', borderRadius: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+          ⚠️ No cluster data yet — run the pipeline first, then come back here.
+        </div>
+      )}
+
+      {/* ── Results ── */}
+      {intelResult && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+          {/* Score banner */}
+          <div style={{
+            padding: '20px 24px', borderRadius: 10,
+            background: `${getRiskColor(intelResult.root_cause?.risk_tier)}18`,
+            border: `1px solid ${getRiskColor(intelResult.root_cause?.risk_tier)}`,
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12
+          }}>
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>Account</div>
+              <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: 'var(--text-primary)' }}>
+                {intelResult.account_id}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+                GNN Score: <strong>{((intelResult.gnn_score || 0) * 100).toFixed(1)}%</strong>
+              </div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>Final Risk Score</div>
+              <div style={{ fontSize: 36, fontWeight: 800, color: getRiskColor(intelResult.root_cause?.risk_tier) }}>
+                {(((intelResult.root_cause?.final_risk_score) || 0) * 100).toFixed(1)}%
+              </div>
+              <span style={{
+                padding: '4px 14px', borderRadius: 20, fontSize: 12, fontWeight: 700,
+                background: getRiskColor(intelResult.root_cause?.risk_tier), color: 'white'
+              }}>{intelResult.root_cause?.risk_tier || '—'}</span>
+            </div>
+          </div>
+
+          {/* 3-column module scores */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
+            {/* Temporal */}
+            <div className="stat-card" style={{ borderTop: '3px solid #6366f1' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>⏱ TEMPORAL</div>
+              <div className="stat-value" style={{ color: '#6366f1', fontSize: 26 }}>
+                {(((intelResult.temporal?.temporal_risk_score) || 0) * 100).toFixed(0)}%
+              </div>
+              <div style={{ marginTop: 8, fontSize: 12, color: intelResult.temporal?.burst_detected ? '#ef4444' : '#22c55e' }}>
+                {intelResult.temporal?.burst_detected ? '🔴 Burst Detected' : '🟢 No Burst'}
+              </div>
+              <div style={{ fontSize: 12, marginTop: 4, color: intelResult.temporal?.rapid_relay_detected ? '#ef4444' : '#22c55e' }}>
+                {intelResult.temporal?.rapid_relay_detected ? '🔴 Rapid Relay' : '🟢 No Relay'}
+              </div>
+              {(intelResult.temporal?.temporal_signals || []).map((s, i) => (
+                <div key={i} style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)', fontStyle: 'italic' }}>↳ {s}</div>
+              ))}
+            </div>
+
+            {/* Behavioral */}
+            <div className="stat-card" style={{ borderTop: '3px solid #10b981' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>🧬 BEHAVIORAL</div>
+              <div className="stat-value" style={{ color: '#10b981', fontSize: 26 }}>
+                {(((intelResult.behavioral?.behavioral_risk_score) || 0) * 100).toFixed(0)}%
+              </div>
+              <div style={{ marginTop: 8, fontSize: 12, color: intelResult.behavioral?.dormancy_reactivation ? '#ef4444' : '#22c55e' }}>
+                {intelResult.behavioral?.dormancy_reactivation ? '🔴 Dormancy Signal' : '🟢 No Dormancy'}
+              </div>
+              <div style={{ fontSize: 12, marginTop: 4, color: intelResult.behavioral?.odd_hour_activity ? '#f97316' : '#22c55e' }}>
+                {intelResult.behavioral?.odd_hour_activity ? '🟠 Odd Hours' : '🟢 Normal Hours'}
+              </div>
+              <div style={{ fontSize: 12, marginTop: 4, color: intelResult.behavioral?.device_ip_switching ? '#f97316' : '#22c55e' }}>
+                {intelResult.behavioral?.device_ip_switching ? '🟠 Device Switching' : '🟢 Stable Device'}
+              </div>
+            </div>
+
+            {/* NLP */}
+            <div className="stat-card" style={{ borderTop: '3px solid #f59e0b' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>🔤 NLP</div>
+              {intelResult.nlp ? (
+                <>
+                  <div className="stat-value" style={{ color: intelResult.nlp.is_suspicious ? '#ef4444' : '#22c55e', fontSize: 26 }}>
+                    {(((intelResult.nlp?.nlp_risk_score) || 0) * 100).toFixed(0)}%
+                  </div>
+                  <div style={{ marginTop: 8, fontSize: 12, color: intelResult.nlp.is_suspicious ? '#ef4444' : '#22c55e' }}>
+                    {intelResult.nlp.is_suspicious ? '🔴 Suspicious Text' : '🟢 Clean Text'}
+                  </div>
+                  <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {(intelResult.nlp.matched_patterns || []).map((p, i) => (
+                      <span key={i} style={{ padding: '2px 8px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 12, fontSize: 10, color: '#dc2626' }}>{p}</span>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>Add a transaction note above to enable NLP detection</div>
+              )}
+            </div>
+          </div>
+
+          {/* Root Cause */}
+          <div style={{ background: 'var(--bg-tinted)', borderRadius: 10, padding: '16px 20px' }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>📋 Root Cause Analysis</div>
+            {(intelResult.root_cause?.explanation || []).length > 0 ? (
+              <ul style={{ margin: 0, padding: '0 0 0 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {intelResult.root_cause.explanation.map((bullet, i) => (
+                  <li key={i} style={{ fontSize: 14, color: 'var(--text-primary)', lineHeight: 1.6 }}>{bullet}</li>
+                ))}
+              </ul>
+            ) : (
+              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>No significant signals detected — account appears clean.</div>
+            )}
+          </div>
+
+          {/* Decision */}
+          {intelResult.decision && (
+            <div style={{
+              borderRadius: 10, padding: '16px 20px',
+              background: `${getRiskColor(intelResult.root_cause?.risk_tier)}0d`,
+              border: `1px solid ${getRiskColor(intelResult.root_cause?.risk_tier)}`
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>⚡ Automated Decision</div>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                  <span style={{
+                    padding: '6px 20px', borderRadius: 20, fontSize: 14, fontWeight: 800, letterSpacing: 1,
+                    background: getRiskColor(intelResult.root_cause?.risk_tier), color: 'white'
+                  }}>{intelResult.decision.action}</span>
+                  {intelResult.decision.sla_hours > 0 && (
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>SLA: {intelResult.decision.sla_hours}h</span>
+                  )}
+                </div>
+              </div>
+              {(intelResult.decision.playbook || []).length > 0 && (
+                <>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>Playbook</div>
+                  <ol style={{ margin: 0, padding: '0 0 0 18px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {intelResult.decision.playbook.map((step, i) => (
+                      <li key={i} style={{ fontSize: 13, color: 'var(--text-primary)' }}>{step}</li>
+                    ))}
+                  </ol>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Standalone NLP Scanner ── */}
+      <div style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid var(--border-subtle)' }}>
+        <h3 style={{ fontSize: 16, marginBottom: 8, color: 'var(--text-primary)' }}>🔤 NLP Fraud Text Scanner</h3>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 12 }}>Scan any transaction note independently for fraud language.</p>
+        <div style={{ display: 'flex', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+          <input
+            id="nlp-standalone-input"
+            type="text"
+            value={nlpText}
+            onChange={e => setNlpText(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && fetchNLP()}
+            placeholder="Type any transaction description..."
+            style={{
+              flex: 1, minWidth: 280, padding: '10px 14px',
+              background: 'var(--bg-tinted)', border: '1px solid var(--border-subtle)',
+              borderRadius: 8, color: 'var(--text-primary)', fontSize: 14
+            }}
+          />
+          <button id="btn-scan-nlp" className="btn btn-primary" onClick={fetchNLP}>🔍 Scan</button>
+        </div>
+        {/* Preset examples */}
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+          {[
+            'urgent advance fee split payment avoid tax',
+            'monthly rent for flat 4B',
+            'mule shell company nominee transfer',
+            'easy money work from home commission',
+          ].map(s => (
+            <button key={s} onClick={() => setNlpText(s)} style={{
+              padding: '3px 12px', background: 'var(--bg-tinted)',
+              border: '1px solid var(--border-subtle)', borderRadius: 20,
+              fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer'
+            }}>{s.slice(0, 32)}…</button>
+          ))}
+        </div>
+        {nlpResult && (
+          <div style={{
+            padding: '16px 20px', borderRadius: 10,
+            background: nlpResult.is_suspicious ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.08)',
+            border: `1px solid ${nlpResult.is_suspicious ? '#ef4444' : '#22c55e'}`
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: nlpResult.is_suspicious ? '#ef4444' : '#22c55e' }}>
+                {nlpResult.is_suspicious ? '🔴 SUSPICIOUS TEXT DETECTED' : '🟢 CLEAN — No fraud patterns found'}
+              </div>
+              <div style={{ fontSize: 28, fontWeight: 800, color: nlpResult.is_suspicious ? '#ef4444' : '#22c55e' }}>
+                {(((nlpResult.nlp_risk_score) || 0) * 100).toFixed(0)}%
+              </div>
+            </div>
+            {(nlpResult.matched_patterns || []).length > 0 && (
+              <div style={{ marginTop: 10, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {nlpResult.matched_patterns.map((p, i) => (
+                  <span key={i} style={{ padding: '3px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 20, fontSize: 12, color: '#dc2626', fontWeight: 600 }}>{p}</span>
+                ))}
+              </div>
+            )}
+            {(nlpResult.matched_terms || []).length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+                Matched: <strong style={{ color: 'var(--text-primary)' }}>{nlpResult.matched_terms.join(', ')}</strong>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Observability Metrics ── */}
+      <div style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid var(--border-subtle)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <h3 style={{ fontSize: 16, margin: 0, color: 'var(--text-primary)' }}>📊 System Observability Metrics</h3>
+          <button id="btn-refresh-metrics" className="btn btn-secondary" onClick={fetchMetrics}>🔄 Refresh</button>
+        </div>
+        {!metricsData ? (
+          <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Click Refresh to load live metrics.</div>
+        ) : (
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 12 }}>
+              Uptime: {(metricsData.uptime_seconds || 0).toFixed(0)}s &nbsp;·&nbsp; {(metricsData.generated_at || '').slice(0, 19)}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 12, marginBottom: 16 }}>
+              {[
+                { label: 'Fraud Rate',       value: (((metricsData.gauges?.fraud_rate) || 0) * 100).toFixed(1) + '%', color: '#ef4444' },
+                { label: 'Model AUC',        value: ((metricsData.gauges?.model_auc) || 0).toFixed(4),             color: '#6366f1' },
+                { label: 'Flagged Accounts', value: metricsData.gauges?.flagged_accounts || 0,                     color: '#f97316' },
+                { label: 'Clusters',         value: metricsData.gauges?.clusters_detected || 0,                   color: '#a78bfa' },
+                { label: 'Total Predictions',value: metricsData.counters?.total_predictions || 0,                 color: '#10b981' },
+                { label: 'Intelligence Calls',value: metricsData.counters?.intelligence_queries || 0,             color: '#3b82f6' },
+                { label: 'NLP Scans',        value: metricsData.counters?.nlp_analyses || 0,                     color: '#f59e0b' },
+              ].map(m => (
+                <div key={m.label} className="stat-card">
+                  <div className="stat-value" style={{ color: m.color, fontSize: 20 }}>{m.value}</div>
+                  <div className="stat-label">{m.label}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
+              {Object.entries(metricsData.latency_ms || {}).map(([scope, stats]) => (
+                <div key={scope} style={{ background: 'var(--bg-tinted)', borderRadius: 8, padding: '12px 16px' }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text-muted)', marginBottom: 6 }}>{scope} latency ms</div>
+                  <div style={{ fontSize: 13 }}>p50: <strong>{stats.p50}</strong></div>
+                  <div style={{ fontSize: 13 }}>p95: <strong style={{ color: '#f97316' }}>{stats.p95}</strong></div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>samples: {stats.count}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState('pipeline')
   const [loading, setLoading] = useState(false)
@@ -34,6 +380,15 @@ function App() {
   const [liveEvents, setLiveEvents] = useState([])
   const [liveConnected, setLiveConnected] = useState(false)
   const eventSourceRef = useRef(null)
+
+  // ── Intelligence state (Steps 2–6) ──────────────────────────
+  const [intelResult, setIntelResult] = useState(null)
+  const [intelAccount, setIntelAccount] = useState('')
+  const [intelText, setIntelText] = useState('')
+  const [intelLoading, setIntelLoading] = useState(false)
+  const [metricsData, setMetricsData] = useState(null)
+  const [nlpText, setNlpText] = useState('urgent advance fee split payment avoid tax')
+  const [nlpResult, setNlpResult] = useState(null)
 
 
   useEffect(() => {
@@ -195,6 +550,32 @@ function App() {
     } catch { /* */ }
   }
 
+  const fetchIntelligence = async () => {
+    if (!intelAccount.trim()) return
+    setIntelLoading(true)
+    addLog(`🧠 Running intelligence analysis for ${intelAccount}...`, 'info')
+    try {
+      const textParam = intelText.trim() ? `?text=${encodeURIComponent(intelText.trim())}` : ''
+      const res = await apiCall(`/api/intelligence/analyze/${intelAccount.trim()}${textParam}`, 'GET')
+      setIntelResult(res)
+      addLog(`✅ Intelligence analysis complete for ${intelAccount}`, 'success')
+    } catch { /* */ } finally { setIntelLoading(false) }
+  }
+
+  const fetchMetrics = async () => {
+    try {
+      const res = await apiCall('/metrics', 'GET')
+      setMetricsData(res)
+    } catch { /* */ }
+  }
+
+  const fetchNLP = async () => {
+    try {
+      const res = await apiCall('/api/intelligence/nlp', 'POST', { text: nlpText, tx_id: 'DEMO-NLP' })
+      setNlpResult(res)
+    } catch { /* */ }
+  }
+
   const startLiveFeed = () => {
     if (eventSourceRef.current) return
     const es = new EventSource(`${API_BASE}/api/stream/live`)
@@ -261,14 +642,15 @@ function App() {
       {/* Navigation */}
       <nav className="nav-tabs">
         {[
-          { id: 'pipeline', icon: '🔄', label: 'Pipeline' },
-          { id: 'graph', icon: '🔗', label: 'Graph' },
-          { id: 'accounts', icon: '👤', label: 'Accounts' },
-          { id: 'clusters', icon: '🕸️', label: 'Clusters' },
-          { id: 'patterns', icon: '🔍', label: 'Patterns' },
-          { id: 'livefeed', icon: '📡', label: 'Live Feed' },
-          { id: 'xai', icon: '🧠', label: 'XAI Auditor' },
-          { id: 'sar', icon: '📋', label: 'SAR Report' },
+          { id: 'pipeline',     icon: '🔄', label: 'Pipeline' },
+          { id: 'graph',        icon: '🔗', label: 'Graph' },
+          { id: 'accounts',     icon: '👤', label: 'Accounts' },
+          { id: 'clusters',     icon: '🕸️', label: 'Clusters' },
+          { id: 'patterns',     icon: '🔍', label: 'Patterns' },
+          { id: 'livefeed',     icon: '📡', label: 'Live Feed' },
+          { id: 'xai',          icon: '🧠', label: 'XAI Auditor' },
+          { id: 'sar',          icon: '📋', label: 'SAR Report' },
+          { id: 'intelligence', icon: '🤖', label: 'Intelligence' },
         ].map(tab => (
           <button
             key={tab.id}
@@ -1091,6 +1473,27 @@ function App() {
             )}
           </div>
         </div>
+      )}
+
+      {/* ═══ Intelligence Tab ═══ */}
+      {activeTab === 'intelligence' && (
+        <IntelligenceTab
+          clusters={clusters}
+          fetchClusters={fetchClusters}
+          intelAccount={intelAccount}
+          setIntelAccount={setIntelAccount}
+          intelText={intelText}
+          setIntelText={setIntelText}
+          intelLoading={intelLoading}
+          fetchIntelligence={fetchIntelligence}
+          intelResult={intelResult}
+          nlpText={nlpText}
+          setNlpText={setNlpText}
+          fetchNLP={fetchNLP}
+          nlpResult={nlpResult}
+          metricsData={metricsData}
+          fetchMetrics={fetchMetrics}
+        />
       )}
 
       {/* Footer */}

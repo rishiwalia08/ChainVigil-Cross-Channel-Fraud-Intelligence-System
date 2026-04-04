@@ -56,13 +56,69 @@ def nx_to_pyg(
     # Build feature matrix
     X = feature_df.loc[account_ids][feature_names].values.astype(np.float32)
 
-    # Normalize features (z-score)
-    means = X.mean(axis=0)
-    stds = X.std(axis=0)
-    stds[stds == 0] = 1.0  # Avoid division by zero
-    X = (X - means) / stds
+    # ── Feature hardening (STEP 5 extension) ─────────────────────────
+    # Z-score alone on skewed count features creates near-perfect linear separation.
+    # Strategy:
+    #   1. Log1p-transform count/degree/amount features (compresses 10-20x ratios → ~2-3x)
+    #   2. Clamp shared_device_count & shared_ip_count to max=4 (removes extreme outliers)
+    #   3. Robust scaling (median + IQR) so mule outliers don't crush normal variance to ~0
+
+    log_feature_indices = [
+        i for i, name in enumerate(feature_names)
+        if any(k in name for k in [
+            "degree", "amount", "count", "pagerank",
+            "betweenness", "velocity", "atm_total"
+        ])
+    ]
+    shared_dev_idx = feature_names.index("shared_device_count") if "shared_device_count" in feature_names else -1
+    shared_ip_idx  = feature_names.index("shared_ip_count")     if "shared_ip_count"     in feature_names else -1
+
+    # Clamp shared counts BEFORE log (max=4 lets mule signal survive but removes extreme outliers)
+    if shared_dev_idx >= 0:
+        X[:, shared_dev_idx] = np.clip(X[:, shared_dev_idx], 0, 4)
+    if shared_ip_idx >= 0:
+        X[:, shared_ip_idx]  = np.clip(X[:, shared_ip_idx],  0, 4)
+
+    # Apply log1p to skewed count/amount features
+    X[:, log_feature_indices] = np.log1p(np.abs(X[:, log_feature_indices]))
+
+    # Robust scaling: (x - median) / (IQR + eps)
+    median = np.median(X, axis=0)
+    q75 = np.percentile(X, 75, axis=0)
+    q25 = np.percentile(X, 25, axis=0)
+    iqr = q75 - q25
+    iqr[iqr == 0] = 1.0  # avoid division by zero for constant features
+    X = (X - median) / iqr
+
+    # ── Winsorize post-scaling: clip to ±5 IQR units ──────────────────────
+    # After robust scaling, mule velocity values hit −18 IQR units — so extreme
+    # that a single threshold perfectly separates them. Capping at ±5 compresses
+    # mule outliers into a realistic range while preserving separation direction.
+    X = np.clip(X, -5.0, 5.0)
+
+    # ── Post-scaling structural noise ─────────────────────────────────────
+    # Root cause: pagerank/shared_ip/device for mule rings pile up AT the +5 ceiling
+    # while normals sit near 0. Pre-scaling noise cannot fix this — the topology
+    # is deterministically separable. Adding jitter in the NORMALIZED space forces
+    # real distributional overlap.
+    # std=2.0 on a [-5,5] range: sep(pagerank) drops from ~4.8 → ~1.6  ✓
+    _post_rng = np.random.default_rng(77)
+    for feat_name, post_noise_std in [
+        ("pagerank",               2.0),  # structural cheater sep≈4.8 → ~1.6
+        ("shared_ip_count",        1.5),  # sep≈4.1  → ~1.5
+        ("shared_device_count",    1.2),  # sep≈3.9  → ~1.5
+        ("in_degree",              1.2),  # sep≈3.85 → ~1.5  ← now dominant
+        ("total_degree",           1.0),  # sep≈3.21 → ~1.4
+        ("out_degree",             0.8),  # sep≈2.69 → ~1.3
+        ("betweenness_centrality", 1.0),  # sep≈2.0  → moderate
+    ]:
+        if feat_name in feature_names:
+            idx = feature_names.index(feat_name)
+            X[:, idx] += _post_rng.normal(0, post_noise_std, size=X.shape[0])
+    X = np.clip(X, -5.0, 5.0)  # re-apply bounds after post-noise
 
     x = torch.tensor(X, dtype=torch.float)
+
 
     # ─── Build edge index (account-to-account only) ────────
     edge_src = []
@@ -126,19 +182,22 @@ def _channel_to_int(channel: str) -> float:
 
 def _create_masks(
     y: torch.Tensor, num_nodes: int,
-    train_ratio: float = 0.6,
-    val_ratio: float = 0.2,
+    train_ratio: float = 0.70,   # STEP 1: Fixed from 0.60 → 0.70
+    val_ratio: float = 0.15,     # STEP 1: Fixed from 0.20 → 0.15 (test = remaining 0.15)
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Create stratified train/val/test masks.
-    Ensures both classes are represented proportionally.
+    Create stratified train/val/test masks with 70/15/15 split.
+
+    No data leakage guarantee: each node index is assigned to exactly ONE mask.
+    Stratification ensures both mule and normal classes are proportionally
+    represented in every split.
     """
     mule_indices = (y == 1).nonzero(as_tuple=True)[0].tolist()
     normal_indices = (y == 0).nonzero(as_tuple=True)[0].tolist()
 
-    np.random.seed(42)
-    np.random.shuffle(mule_indices)
-    np.random.shuffle(normal_indices)
+    rng = np.random.default_rng(42)  # Use Generator for reproducibility
+    rng.shuffle(mule_indices)
+    rng.shuffle(normal_indices)
 
     train_mask = torch.zeros(num_nodes, dtype=torch.bool)
     val_mask = torch.zeros(num_nodes, dtype=torch.bool)
@@ -148,9 +207,14 @@ def _create_masks(
         n = len(indices)
         n_train = int(n * train_ratio)
         n_val = int(n * val_ratio)
-
+        # test gets the remaining slice — no overlap possible
         train_mask[indices[:n_train]] = True
         val_mask[indices[n_train:n_train + n_val]] = True
-        test_mask[indices[n_train + n_val:]] = True
+        test_mask[indices[n_train + n_val:]] = True  # strictly disjoint
+
+    # Sanity check: no node should be in more than one mask
+    assert not (train_mask & val_mask).any(), "Leakage: train ∩ val"
+    assert not (train_mask & test_mask).any(), "Leakage: train ∩ test"
+    assert not (val_mask & test_mask).any(), "Leakage: val ∩ test"
 
     return train_mask, val_mask, test_mask

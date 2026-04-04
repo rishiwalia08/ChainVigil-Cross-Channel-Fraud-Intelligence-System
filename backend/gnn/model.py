@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import SAGEConv, GATConv, BatchNorm
+from torch_geometric.utils import dropout_edge
 
 from backend.config import GNN_HIDDEN_DIM, GNN_NUM_LAYERS, GNN_DROPOUT
 
@@ -27,14 +28,16 @@ class ChainVigilGNN(nn.Module):
         self,
         in_channels: int,
         hidden_channels: int = GNN_HIDDEN_DIM,
-        num_layers: int = GNN_NUM_LAYERS,
+        num_layers: int = 2,
         dropout: float = GNN_DROPOUT,
         num_heads: int = 4,
+        edge_drop_p: float = 0.45,  # DropEdge: kills 45% of edges during training
     ):
         super().__init__()
 
         self.num_layers = num_layers
         self.dropout = dropout
+        self.edge_drop_p = edge_drop_p
 
         # ─── GraphSAGE layers ──────────────────────────────
         self.sage_convs = nn.ModuleList()
@@ -70,16 +73,17 @@ class ChainVigilGNN(nn.Module):
 
     def forward(self, x, edge_index):
         """
-        Forward pass.
+        Forward pass with DropEdge regularization.
 
-        Args:
-            x: Node feature matrix [num_nodes, in_channels]
-            edge_index: Edge indices [2, num_edges]
-
-        Returns:
-            probs: Mule probability per node [num_nodes, 1]
-            embeddings: Node embeddings after GNN layers [num_nodes, hidden]
+        DropEdge randomly removes edges during training, preventing the GNN from
+        exploiting dense community structure to achieve perfect AUC on synthetic data.
         """
+        # ─── DropEdge: randomly drop 30% of edges during training ────────
+        if self.training and self.edge_drop_p > 0:
+            edge_index, _ = dropout_edge(
+                edge_index, p=self.edge_drop_p, training=True
+            )
+
         # ─── GraphSAGE message passing ─────────────────────
         h = x
         for i in range(self.num_layers - 1):

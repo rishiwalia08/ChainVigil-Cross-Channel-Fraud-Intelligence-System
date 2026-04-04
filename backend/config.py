@@ -9,10 +9,10 @@ NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "chainvigil")
 
 # ─── Data Generation Defaults ───────────────────────────────────────
-NUM_ACCOUNTS = int(os.getenv("NUM_ACCOUNTS", "500"))
-NUM_TRANSACTIONS = int(os.getenv("NUM_TRANSACTIONS", "2500"))
-NUM_MULE_RINGS = int(os.getenv("NUM_MULE_RINGS", "5"))
-MULE_RING_SIZE_RANGE = (4, 8)
+NUM_ACCOUNTS = int(os.getenv("NUM_ACCOUNTS", "900"))        # scaled up for more test diversity
+NUM_TRANSACTIONS = int(os.getenv("NUM_TRANSACTIONS", "4500"))  # maintain edge density
+NUM_MULE_RINGS = int(os.getenv("NUM_MULE_RINGS", "20"))     # 20 rings → ~100-120 mule nodes
+MULE_RING_SIZE_RANGE = (4, 8)   # restored size: more mules per ring
 
 # ─── Channels ───────────────────────────────────────────────────────
 CHANNELS = ["UPI", "ATM", "WEB", "MOBILE_APP"]
@@ -22,7 +22,7 @@ GNN_HIDDEN_DIM = 64
 GNN_NUM_LAYERS = 3
 GNN_LEARNING_RATE = 0.005
 GNN_EPOCHS = 200
-GNN_DROPOUT = 0.3
+GNN_DROPOUT = 0.4   # ↑ stronger regularisation to prevent overfitting small test set
 RISK_THRESHOLD = 0.85
 
 # ─── Paths ──────────────────────────────────────────────────────────
