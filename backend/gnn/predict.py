@@ -51,7 +51,8 @@ def predict_scores(
     data = data.to(device)
 
     with torch.no_grad():
-        probs, embeddings = model(data.x, data.edge_index)
+        logits, embeddings = model(data.x, data.edge_index)
+        probs = torch.sigmoid(logits)
 
     probs_np = probs.cpu().numpy()
 
@@ -76,9 +77,9 @@ def _determine_action(score: float, threshold: float) -> str:
     """Determine recommended action based on risk score."""
     if score >= threshold:
         return "Escalate"
-    elif score >= threshold * 0.7:
+    elif score >= threshold * 0.70:
         return "Freeze"
-    elif score >= threshold * 0.5:
+    elif score >= threshold * 0.45:
         return "Monitor"
     else:
         return "Clear"
@@ -107,5 +108,6 @@ def predict_account_score_realtime(
 
     model.eval()
     with torch.no_grad():
-        probs, _ = model(data.x, data.edge_index)
+        logits, _ = model(data.x, data.edge_index)
+        probs = torch.sigmoid(logits)
     return float(probs[idx].cpu().item())

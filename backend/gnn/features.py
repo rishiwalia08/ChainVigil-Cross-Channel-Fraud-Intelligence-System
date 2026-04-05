@@ -76,14 +76,14 @@ def compute_node_features(
     # ── Non-negative features: clamp to 0 after noise ─────────────────────
 
     for col, noise_std_frac in [
-        ("in_degree",              0.30),
-        ("out_degree",             0.30),
-        ("total_degree",           0.30),
-        ("shared_device_count",    0.40),   # bumped: sep=4.45 after cap
-        ("shared_ip_count",        0.40),   # bumped: sep=4.62 after cap
-        ("atm_withdrawal_count",   0.20),
-        ("total_in_amount",        0.15),
-        ("total_out_amount",       0.15),
+        ("in_degree",              0.12),
+        ("out_degree",            0.12),
+        ("total_degree",          0.12),
+        ("shared_device_count",   0.15),
+        ("shared_ip_count",       0.15),
+        ("atm_withdrawal_count", 0.10),
+        ("total_in_amount",       0.10),
+        ("total_out_amount",      0.10),
     ]:
         if col in df.columns:
             col_std = df[col].std() if df[col].std() > 0 else 1.0
@@ -95,12 +95,12 @@ def compute_node_features(
     # (rapid transactions → tiny deltas → far below median).
     # Clipping these to 0 would erase the noise entirely for mule nodes.
     for col, noise_std_frac in [
-        ("min_velocity_seconds",   0.50),   # sep was 11.1 → now winsorized too
-        ("avg_velocity_seconds",   0.40),
-        ("max_velocity_seconds",   0.35),
-        ("pagerank",               0.50),   # sep=7.37 — extra noise after p95 cap
-        ("betweenness_centrality", 0.35),
-        ("clustering_coefficient", 0.20),
+        ("min_velocity_seconds",   0.15),
+        ("avg_velocity_seconds",   0.12),
+        ("max_velocity_seconds",   0.10),
+        ("pagerank",               0.15),
+        ("betweenness_centrality", 0.12),
+        ("clustering_coefficient", 0.10),
     ]:
         if col in df.columns:
             col_std = df[col].std() if df[col].std() > 0 else 1.0

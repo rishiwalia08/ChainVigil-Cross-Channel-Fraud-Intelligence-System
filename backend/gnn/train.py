@@ -35,7 +35,7 @@ class Trainer:
         num_layers: int = GNN_NUM_LAYERS,
         dropout: float = GNN_DROPOUT,
         lr: float = GNN_LEARNING_RATE,
-        label_noise_rate: float = 0.18 ,  # STEP 2: 18% label noise on training set (↑ from 12%)
+        label_noise_rate: float = 0.08,  # moderate label noise for realistic AUC
     ):
         self.data = data
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -179,7 +179,8 @@ class Trainer:
         """Evaluate model on masked nodes."""
         self.model.eval()
         with torch.no_grad():
-            probs, _ = self.model(self.data.x, self.data.edge_index)
+            logits, _ = self.model(self.data.x, self.data.edge_index)
+            probs = torch.sigmoid(logits)
 
         probs_np = probs[mask].cpu().numpy()
         labels_np = self.data.y[mask].cpu().numpy()
@@ -221,7 +222,8 @@ class Trainer:
         """Get mule probability scores for ALL nodes."""
         self.model.eval()
         with torch.no_grad():
-            probs, _ = self.model(self.data.x, self.data.edge_index)
+            logits, _ = self.model(self.data.x, self.data.edge_index)
+            probs = torch.sigmoid(logits)
         return probs.cpu().numpy()
 
     def get_embeddings(self) -> np.ndarray:

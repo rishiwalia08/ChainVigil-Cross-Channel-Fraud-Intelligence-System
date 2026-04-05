@@ -374,7 +374,7 @@ function App() {
   const [graphRef] = [useRef(null)]
   const graphRefActual = useRef(null)
   const logRef = useRef(null)
-  const [patterns, setPatterns] = useState(null)
+
   const [sanctions, setSanctions] = useState(null)
   const [sarReport, setSarReport] = useState(null)
   const [liveEvents, setLiveEvents] = useState([])
@@ -523,14 +523,7 @@ function App() {
     } catch { /* */ } finally { setGraphLoading(false) }
   }
 
-  const fetchPatterns = async () => {
-    addLog('Running financial crime pattern detection...', 'info')
-    try {
-      const res = await apiCall('/api/patterns', 'GET')
-      setPatterns(res)
-      addLog(`✅ ${res.total_patterns_detected} patterns detected`, 'success')
-    } catch { /* */ }
-  }
+
 
   const fetchSanctions = async () => {
     addLog('Running behaviour-based sanctions screening...', 'info')
@@ -646,7 +639,7 @@ function App() {
           { id: 'graph',        icon: '🔗', label: 'Graph' },
           { id: 'accounts',     icon: '👤', label: 'Accounts' },
           { id: 'clusters',     icon: '🕸️', label: 'Clusters' },
-          { id: 'patterns',     icon: '🔍', label: 'Patterns' },
+
           { id: 'livefeed',     icon: '📡', label: 'Live Feed' },
           { id: 'xai',          icon: '🧠', label: 'XAI Auditor' },
           { id: 'sar',          icon: '📋', label: 'SAR Report' },
@@ -1232,64 +1225,6 @@ function App() {
       )}
 
       {/* Footer */}
-      {/* ── Patterns Tab ── */}
-      {activeTab === 'patterns' && (
-        <div className="tab-content">
-          <div className="section-card">
-            <div className="section-header">
-              <h2 className="section-title">🔍 Financial Crime Pattern Detection</h2>
-              <button className="btn btn-primary" onClick={fetchPatterns}>
-                {patterns ? '🔄 Refresh' : '🔍 Run Detection'}
-              </button>
-            </div>
-            {!patterns ? (
-              <div className="empty-state">
-                <div style={{ fontSize: 48 }}>🔍</div>
-                <h3>Pattern Detection Not Run</h3>
-                <p>Run the pipeline first, then click "Run Detection" to detect structuring, fragmentation, nesting, and circular flow patterns.</p>
-              </div>
-            ) : (
-              <div>
-                <div className="stats-grid" style={{ marginBottom: 24 }}>
-                  {[
-                    { label: 'Structuring Cases', value: patterns.structuring_cases, color: '#ef4444' },
-                    { label: 'Fragmentation Cases', value: patterns.fragmentation_cases, color: '#f97316' },
-                    { label: 'Nesting Cases', value: patterns.nesting_cases, color: '#eab308' },
-                    { label: 'Circular Flow Cases', value: patterns.circular_flow_cases, color: '#8b5cf6' },
-                  ].map(s => (
-                    <div key={s.label} className="stat-card" style={{ borderTop: `3px solid ${s.color}` }}>
-                      <div className="stat-value" style={{ color: s.color }}>{s.value}</div>
-                      <div className="stat-label">{s.label}</div>
-                    </div>
-                  ))}
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  {patterns.patterns?.slice(0, 20).map((p, i) => (
-                    <div key={i} className="account-card" style={{ borderLeft: `4px solid ${p.confidence_score >= 80 ? '#ef4444' : p.confidence_score >= 60 ? '#f97316' : '#eab308'}` }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8 }}>
-                        <div>
-                          <span style={{ fontWeight: 700, color: 'var(--text-primary)', marginRight: 10 }}>{p.pattern_type}</span>
-                          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{p.account_id}</span>
-                        </div>
-                        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                          <span style={{ background: p.confidence_score >= 80 ? '#ef444422' : '#f9731622', color: p.confidence_score >= 80 ? '#ef4444' : '#f97316', padding: '2px 10px', borderRadius: 20, fontWeight: 700, fontSize: 13 }}>
-                            {p.confidence_score}% confidence
-                          </span>
-                          <span style={{ fontSize: 11, background: 'var(--surface-elevated)', padding: '2px 8px', borderRadius: 12, color: 'var(--text-secondary)' }}>
-                            {p.recommended_action}
-                          </span>
-                        </div>
-                      </div>
-                      <p style={{ margin: '8px 0 4px', fontSize: 13, color: 'var(--text-secondary)' }}>{p.evidence}</p>
-                      <p style={{ margin: 0, fontSize: 11, color: 'var(--text-muted)', fontStyle: 'italic' }}>📜 {p.regulatory_ref}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* ── Live Feed Tab ── */}
       {activeTab === 'livefeed' && (

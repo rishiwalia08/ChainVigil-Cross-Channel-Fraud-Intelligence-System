@@ -68,11 +68,11 @@ class MuleExplainer:
         # ─── Get mule probability ──────────────────────────
         self.model.eval()
         with torch.no_grad():
-            probs, _ = self.model(
+            logits, _ = self.model(
                 self.data.x.to(self.device),
                 self.data.edge_index.to(self.device)
             )
-            mule_prob = float(probs[idx].cpu().item())
+            mule_prob = float(torch.sigmoid(logits[idx]).cpu().item())
 
         return {
             "account_id": account_id,
@@ -90,9 +90,9 @@ class MuleExplainer:
         x = self.data.x.to(self.device).clone().requires_grad_(True)
         edge_index = self.data.edge_index.to(self.device)
 
-        probs, _ = self.model(x, edge_index)
-        target_prob = probs[node_idx]
-        target_prob.backward()
+        logits, _ = self.model(x, edge_index)
+        target_logit = logits[node_idx]
+        target_logit.backward()
 
         gradients = x.grad[node_idx].cpu().detach().numpy()
         feature_vals = self.data.x[node_idx].cpu().numpy()

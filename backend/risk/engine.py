@@ -83,8 +83,9 @@ class RiskIntelligenceEngine:
 
     def _detect_clusters(self):
         """
-        Detect mule ring clusters using connected component analysis
-        on the subgraph of flagged accounts.
+        Detect mule ring clusters using Louvain community detection
+        on the subgraph of flagged accounts. Falls back to connected
+        components if Louvain is unavailable.
         """
         # Build subgraph of flagged + transfer edges
         flagged_set = set(self.flagged_accounts)
@@ -95,11 +96,22 @@ class RiskIntelligenceEngine:
                     u in flagged_set and v in flagged_set):
                 subgraph.add_edge(u, v, **data)
 
-        # Find weakly connected components (potential mule rings)
-        components = list(nx.weakly_connected_components(subgraph))
+        # Use Louvain community detection for better cluster separation
+        # WCC often merges all rings into one blob due to bridge edges
+        try:
+            undirected = subgraph.to_undirected()
+            if undirected.number_of_nodes() > 0:
+                communities = nx.community.louvain_communities(
+                    undirected, resolution=1.5, seed=42
+                )
+            else:
+                communities = []
+        except Exception:
+            # Fallback to connected components
+            communities = list(nx.weakly_connected_components(subgraph))
 
         self.clusters = []
-        for idx, component in enumerate(components):
+        for idx, component in enumerate(communities):
             if len(component) >= 2:  # At least 2 members
                 members = list(component)
                 cluster_subgraph = subgraph.subgraph(members)

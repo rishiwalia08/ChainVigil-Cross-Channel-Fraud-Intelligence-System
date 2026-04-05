@@ -437,8 +437,8 @@ def generate_transactions(
     #   B) Each mule account → 2–5 transactions to random normals (mule→normal exits)
     # This forces approximately 40-60% of each mule's neighbors to be normal accounts.
 
-    # A) Normal → Mule bridges (85% of normals)
-    n_bridges = int(len(normal_ids) * 0.85)
+    # A) Normal → Mule bridges (35% of normals)
+    n_bridges = int(len(normal_ids) * 0.35)
     bridge_ids = random.sample(normal_ids, min(n_bridges, len(normal_ids)))
     for norm_id in bridge_ids:
         mule_target = random.choice(mule_ids)
@@ -458,10 +458,9 @@ def generate_transactions(
             "is_suspicious": False,  # labelled normal — creates ambiguity
         })
 
-    # B) Mule → Normal "exit" bridges: each mule sends money to 10–18 normals
-    # ↑ from 2-5: ensures >50% of each mule's neighbors are normal accounts
+    # B) Mule → Normal "exit" bridges: each mule sends money to 4–7 normals
     for mule_id in mule_ids:
-        n_exits = random.randint(10, 18)
+        n_exits = random.randint(4, 7)
         exit_targets = random.sample(normal_ids, min(n_exits, len(normal_ids)))
         for norm_target in exit_targets:
             ts = base_time + timedelta(
@@ -549,7 +548,7 @@ def generate_atm_withdrawals(
 def inject_hard_negatives(
     accounts_df: pd.DataFrame,
     transactions_df: pd.DataFrame,
-    n_hard_negatives: int = 250,  # ↑ from 80: more confusion samples needed
+    n_hard_negatives: int = 80,  # enough confusion to prevent perfect ranking
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     STEP 4 — Inject 'normal-looking fraud' accounts.
@@ -608,6 +607,128 @@ def inject_hard_negatives(
     return combined_accounts, combined_txns
 
 
+# ─── STEP 5: Normal Cliques (Structural Confusion) ──────────────
+
+def inject_normal_cliques(
+    accounts_df: pd.DataFrame,
+    transactions_df: pd.DataFrame,
+    devices_df: pd.DataFrame,
+    ips_df: pd.DataFrame,
+    n_cliques: int = 20,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    STEP 5 — Inject clusters of LEGITIMATE accounts that form dense
+    transaction cliques, mimicking the exact topology of mule rings.
+
+    Each clique: 3-6 accounts, all-pairs transactions, shared devices/IPs.
+    This forces the GNN to learn beyond "dense clique = mule ring" which
+    is the reason AUC sits at 1.0 even with heavy feature noise.
+    """
+    base_time = datetime.now() - timedelta(days=30)
+    new_accounts = []
+    new_txns = []
+    new_devices = []
+    new_ips = []
+
+    for clique_idx in range(n_cliques):
+        clique_size = random.randint(3, 6)
+        clique_ids = [f"ACC-CLQ-{clique_idx:02d}-{j:02d}" for j in range(clique_size)]
+
+        # Shared device and IP within the clique (like mule rings share devices)
+        shared_device = _generate_device_id()
+        shared_ip = _generate_ip()
+
+        for acc_id in clique_ids:
+            jurisdiction = random.choice(["IN", "US", "UK", "AE"])
+            new_accounts.append({
+                "account_id": acc_id,
+                "holder_name": fake.name(),
+                "jurisdiction": jurisdiction,
+                "jurisdiction_risk_weight": JURISDICTIONS[jurisdiction],
+                "account_type": random.choice(["SAVINGS", "CURRENT"]),
+                "created_at": fake.date_between(
+                    start_date="-2y", end_date="-90d"
+                ).isoformat(),
+                "is_mule": False,  # LEGITIMATE — this is the key
+            })
+
+            # Shared device + IP (mimics mule ring device sharing)
+            new_devices.append({
+                "account_id": acc_id,
+                "device_id": shared_device,
+            })
+            new_ips.append({
+                "account_id": acc_id,
+                "ip_address": shared_ip,
+            })
+            # Also give each a personal device
+            new_devices.append({
+                "account_id": acc_id,
+                "device_id": _generate_device_id(),
+            })
+
+        # All-pairs transactions within the clique (dense ring structure)
+        for i, src in enumerate(clique_ids):
+            for j, dst in enumerate(clique_ids):
+                if i != j:
+                    n_txns = random.randint(2, 5)
+                    for _ in range(n_txns):
+                        ts = base_time + timedelta(
+                            days=random.randint(0, 29),
+                            hours=random.randint(0, 23),
+                            minutes=random.randint(0, 59),
+                        )
+                        new_txns.append({
+                            "transaction_id": f"TXN-{uuid.uuid4().hex[:12].upper()}",
+                            "source_id": src,
+                            "target_id": dst,
+                            "amount": round(random.uniform(5000, 100000), 2),
+                            "channel_type": random.choice(CHANNELS),
+                            "timestamp": ts.isoformat(),
+                            "geo_location": random.choice(GEO_LOCATIONS),
+                            "is_suspicious": False,
+                        })
+
+        # Some transactions to/from existing normal accounts (external edges)
+        existing_normals = accounts_df[~accounts_df["is_mule"]]["account_id"].tolist()
+        for acc_id in clique_ids:
+            n_ext = random.randint(2, 4)
+            for _ in range(n_ext):
+                ext_target = random.choice(existing_normals)
+                ts = base_time + timedelta(
+                    days=random.randint(0, 29),
+                    hours=random.randint(0, 23),
+                )
+                new_txns.append({
+                    "transaction_id": f"TXN-{uuid.uuid4().hex[:12].upper()}",
+                    "source_id": acc_id,
+                    "target_id": ext_target,
+                    "amount": round(random.uniform(1000, 50000), 2),
+                    "channel_type": random.choice(CHANNELS),
+                    "timestamp": ts.isoformat(),
+                    "geo_location": random.choice(GEO_LOCATIONS),
+                    "is_suspicious": False,
+                })
+
+    combined_accounts = pd.concat(
+        [accounts_df, pd.DataFrame(new_accounts)], ignore_index=True
+    )
+    combined_txns = pd.concat(
+        [transactions_df, pd.DataFrame(new_txns)], ignore_index=True
+    )
+    combined_devices = pd.concat(
+        [devices_df, pd.DataFrame(new_devices)], ignore_index=True
+    )
+    combined_ips = pd.concat(
+        [ips_df, pd.DataFrame(new_ips)], ignore_index=True
+    )
+
+    n_clique_accounts = sum(1 for _ in new_accounts)
+    print(f"   👥 Normal cliques: {n_cliques} cliques, {n_clique_accounts} accounts, "
+          f"{len(new_txns)} transactions")
+    return combined_accounts, combined_txns, combined_devices, combined_ips
+
+
 # ─── Master Generator ─────────────────────────────────────────────
 
 def generate_all_data(
@@ -636,6 +757,13 @@ def generate_all_data(
     # STEP 4: Inject hard negatives after transactions are generated
     print(f"🧨 Injecting hard negative samples...")
     accounts_df, transactions_df = inject_hard_negatives(accounts_df, transactions_df)
+
+    # STEP 5: Inject normal cliques — dense clusters of legitimate accounts
+    # that mimic mule ring topology to confuse the GNN's structural signal
+    print(f"👥 Injecting normal cliques (structural confusion)...")
+    accounts_df, transactions_df, devices_df, ips_df = inject_normal_cliques(
+        accounts_df, transactions_df, devices_df, ips_df, n_cliques=20
+    )
 
     # Device/IP mappings for hard negatives (unique per account — they're legit)
     hn_accounts = accounts_df[accounts_df["account_id"].str.startswith("ACC-HN-")]
