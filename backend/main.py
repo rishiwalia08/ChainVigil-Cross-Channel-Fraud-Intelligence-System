@@ -791,11 +791,43 @@ async def get_sar_report():
             "edges": G.number_of_edges(),
         }
 
+    # Build XAI details for top suspicious subjects (for SAR rendering)
+    xai_by_account = {}
+    top_accounts = [
+        acc.get("account_id")
+        for acc in state["risk_summary"].get("high_risk_accounts", [])[:20]
+        if acc.get("account_id")
+    ]
+
+    if top_accounts and state.get("trainer") is not None and state.get("pyg_data") is not None:
+        from backend.xai.explainer import MuleExplainer
+
+        explainer = MuleExplainer(
+            state["trainer"].model,
+            state["pyg_data"],
+            state["account_ids"],
+            state["node_mapping"],
+        )
+
+        for account_id in top_accounts:
+            if account_id in state["explanations"]:
+                xai_by_account[account_id] = state["explanations"][account_id]
+                continue
+
+            try:
+                explanation = explainer.explain_account(account_id)
+                state["explanations"][account_id] = explanation
+                xai_by_account[account_id] = explanation
+            except Exception:
+                # Keep SAR generation resilient even if one explanation fails
+                continue
+
     sar = generate_sar_report(
         risk_summary=state["risk_summary"],
         patterns=state.get("patterns"),
         sanctions=state.get("sanctions"),
         graph_stats=graph_stats,
+        xai_by_account=xai_by_account,
     )
     return sar
 

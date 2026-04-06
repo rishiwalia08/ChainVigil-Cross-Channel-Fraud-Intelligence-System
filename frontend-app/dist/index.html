@@ -1,15 +1,103 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="light">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ChainVigil — Mule Detection Dashboard</title>
-    <meta name="description" content="Cross-Channel Mule Detection using Graph Intelligence & GNN" />
-    <script type="module" crossorigin src="/assets/index-Xj9JPagO.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-RTbGB1D3.css">
+    <title>ChainVigil | Pipeline Terminal</title>
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com" rel="preconnect"/>
+    <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;700;800&display=swap" rel="stylesheet"/>
+    <!-- Icons -->
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "inverse-surface": "#2d3133",
+                    "surface-container-high": "#e5e9eb",
+                    "surface-container-highest": "#e0e3e5",
+                    "on-secondary-fixed-variant": "#3d4759",
+                    "primary": "#006d3c",
+                    "tertiary-fixed": "#ffd9dc",
+                    "on-surface-variant": "#3e4a40",
+                    "on-secondary-fixed": "#121c2c",
+                    "on-primary": "#ffffff",
+                    "surface-container-low": "#f1f4f6",
+                    "on-primary-fixed-variant": "#00522c",
+                    "on-surface": "#181c1e",
+                    "secondary": "#555f71",
+                    "on-tertiary-container": "#74162d",
+                    "surface-tint": "#006d3c",
+                    "on-tertiary": "#ffffff",
+                    "on-background": "#181c1e",
+                    "on-secondary": "#ffffff",
+                    "primary-fixed-dim": "#6bdc96",
+                    "on-error-container": "#93000a",
+                    "secondary-fixed": "#d9e3f9",
+                    "on-tertiary-fixed": "#400011",
+                    "primary-container": "#48bb78",
+                    "secondary-container": "#d6e0f6",
+                    "surface-container": "#ebeef0",
+                    "surface": "#f7fafc",
+                    "on-error": "#ffffff",
+                    "secondary-fixed-dim": "#bdc7dc",
+                    "outline-variant": "#bdcabd",
+                    "tertiary-fixed-dim": "#ffb2bb",
+                    "error-container": "#ffdad6",
+                    "on-secondary-container": "#596376",
+                    "outline": "#6e7a6f",
+                    "primary-fixed": "#88f9b0",
+                    "surface-dim": "#d7dadc",
+                    "on-primary-container": "#004625",
+                    "surface-container-lowest": "#ffffff",
+                    "inverse-primary": "#6bdc96",
+                    "inverse-on-surface": "#eef1f3",
+                    "on-tertiary-fixed-variant": "#832237",
+                    "on-primary-fixed": "#00210f",
+                    "surface-bright": "#f7fafc",
+                    "tertiary": "#a23a4e",
+                    "surface-variant": "#e0e3e5",
+                    "error": "#ba1a1a",
+                    "tertiary-container": "#fc8093",
+                    "background": "#f7fafc"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.125rem",
+                    "lg": "0.25rem",
+                    "xl": "0.5rem",
+                    "full": "0.75rem"
+            },
+            "fontFamily": {
+                    "headline": ["Space Grotesk"],
+                    "body": ["Inter"],
+                    "label": ["Inter"],
+                    "mono": ["JetBrains Mono"]
+            }
+          },
+        },
+      }
+    </script>
+    <style>
+      .material-symbols-outlined {
+        font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+      }
+      .glass-card {
+        background: #ffffff;
+      }
+      .grid-bg {
+        background-image: radial-gradient(circle, #006d3c11 1px, transparent 1px);
+        background-size: 24px 24px;
+      }
+    </style>
+    <script type="module" crossorigin src="/assets/index-DUqKqzK9.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-COqGaTN_.css">
   </head>
-  <body>
-    <div id="root"></div>
+  <body class="bg-surface text-on-surface font-body selection:bg-primary-fixed selection:text-on-primary-fixed">
+    <div id="root"></div>
   </body>
 </html>

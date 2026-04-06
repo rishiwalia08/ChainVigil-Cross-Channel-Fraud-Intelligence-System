@@ -37,6 +37,7 @@ def generate_sar_report(
     patterns: Optional[Dict] = None,
     sanctions: Optional[Dict] = None,
     graph_stats: Optional[Dict] = None,
+    xai_by_account: Optional[Dict[str, Dict]] = None,
 ) -> Dict:
     """
     Generate a comprehensive FIU-IND aligned SAR report.
@@ -128,6 +129,15 @@ def generate_sar_report(
         # Anonymize for inter-bank sharing
         anon_id = hashlib.sha256(acc_id.encode()).hexdigest()[:16].upper()
 
+        xai_payload = (xai_by_account or {}).get(acc_id, {})
+        xai_subject = None
+        if xai_payload:
+            xai_subject = {
+                "confidence_score": xai_payload.get("confidence_score"),
+                "xai_reasoning": xai_payload.get("xai_reasoning"),
+                "feature_attributions": xai_payload.get("feature_attributions", [])[:5],
+            }
+
         subjects.append({
             "subject_reference": f"SUBJ-{anon_id}",
             "account_id_hash": anon_id,
@@ -144,6 +154,7 @@ def generate_sar_report(
                 "matched_financial_crime_patterns": matched_patterns,
                 "sanctions_watchlist_hit": sanctions_flag,
             },
+            "xai_auditor": xai_subject,
         })
 
     # ── Section 4: Pattern Analysis ──────────────────────────────

@@ -1557,6 +1557,41 @@ function App() {
                                 <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
                                   Filing: {subj.regulatory_filing}
                                 </div>
+
+                                {subj.xai_auditor && (
+                                  <div style={{ marginTop: 12, background: 'var(--bg-tinted)', borderRadius: 8, padding: 10, border: '1px solid var(--border-subtle)' }}>
+                                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 6 }}>
+                                      🧠 XAI Auditor (SAR)
+                                    </div>
+                                    {subj.xai_auditor.xai_reasoning && (
+                                      <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 8 }}>
+                                        {subj.xai_auditor.xai_reasoning}
+                                      </div>
+                                    )}
+                                    {(subj.xai_auditor.feature_attributions || []).length > 0 && (
+                                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                        {subj.xai_auditor.feature_attributions.map((feat, idx) => (
+                                          <div key={`${feat.name}-${idx}`} style={{ display: 'grid', gridTemplateColumns: '140px 1fr 52px', gap: 8, alignItems: 'center' }}>
+                                            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{(feat.name || '').replace(/_/g, ' ')}</span>
+                                            <div style={{ width: '100%', height: 6, borderRadius: 999, background: 'var(--border-subtle)' }}>
+                                              <div
+                                                style={{
+                                                  width: `${Math.max(0, Math.min(100, (feat.importance || 0) * 100))}%`,
+                                                  height: '100%',
+                                                  borderRadius: 999,
+                                                  background: 'linear-gradient(90deg, #06b6d4, #6366f1)'
+                                                }}
+                                              />
+                                            </div>
+                                            <span style={{ fontSize: 11, color: 'var(--text-secondary)', textAlign: 'right' }}>
+                                              {((feat.importance || 0) * 100).toFixed(1)}%
+                                            </span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                               <div style={{ textAlign: 'right' }}>
                                 <div style={{ fontWeight: 700, color: subj.risk_score >= 80 ? '#ef4444' : '#f97316', fontSize: 20 }}>
