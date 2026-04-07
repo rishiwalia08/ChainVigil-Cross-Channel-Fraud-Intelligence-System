@@ -33,7 +33,7 @@ class IngestRequest(BaseModel):
 
 
 class TrainRequest(BaseModel):
-    epochs: int = Field(default=200, ge=10, le=1000)
+    epochs: int = Field(default=40, ge=10, le=1000)
     learning_rate: float = Field(default=0.005, gt=0, lt=1)
 
 
@@ -80,6 +80,36 @@ class AuditReport(BaseModel):
     cluster_id: Optional[str] = None
     xai_reasoning: str
     timestamp: datetime = Field(default_factory=datetime.now)
+
+
+class FeatureAttribution(BaseModel):
+    name: str
+    importance: float
+    rank: int
+
+
+class DriverMeaning(BaseModel):
+    feature: str
+    importance: float
+    meaning: str
+
+
+class LLMMeta(BaseModel):
+    source: str
+    model: str
+
+
+class AccountExplanationResponse(BaseModel):
+    account_id: str
+    confidence_score: float
+    top_features: List[str]
+    feature_attributions: List[FeatureAttribution]
+    feature_values: dict
+    xai_reasoning: str
+    plain_english_summary: str = ""
+    llm_meta: Optional[LLMMeta] = None
+    key_driver_meanings: List[DriverMeaning] = Field(default_factory=list)
+    suggested_actions: List[str] = Field(default_factory=list)
 
 
 class PipelineStatus(BaseModel):

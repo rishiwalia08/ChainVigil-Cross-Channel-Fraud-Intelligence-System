@@ -13,6 +13,27 @@ from torch_geometric.data import Data
 
 from backend.gnn.model import ChainVigilGNN
 from backend.gnn.features import get_feature_names
+from backend.xai.llm_explainer import LLMExplainer
+
+
+DRIVER_MEANINGS = {
+    "pagerank": "A network importance score based on how many important accounts connect to it.",
+    "betweenness_centrality": "How often the account sits on shortest paths between other accounts; high values indicate broker/relay behavior.",
+    "in_degree": "How many incoming transfers the account receives.",
+    "out_degree": "How many outgoing transfers the account sends.",
+    "total_degree": "Total number of inbound + outbound transfer links.",
+    "total_in_amount": "Total incoming amount transferred into the account.",
+    "total_out_amount": "Total outgoing amount transferred out of the account.",
+    "avg_velocity_seconds": "Average time gap between the account's transactions.",
+    "min_velocity_seconds": "Shortest observed time gap between consecutive transactions.",
+    "shared_device_count": "How many other accounts use the same device.",
+    "shared_ip_count": "How many other accounts use the same IP address.",
+    "channel_diversity": "How many distinct transaction channels are used (UPI/ATM/WEB/etc).",
+    "amount_ratio": "Outflow compared to inflow; high values can indicate pass-through behavior.",
+    "atm_withdrawal_count": "Cash-out intensity via ATM withdrawals.",
+    "clustering_coefficient": "How densely this account is interconnected with neighbors.",
+    "jurisdiction_risk_weight": "Aggregate risk score from linked geographies/jurisdictions.",
+}
 
 
 class MuleExplainer:
@@ -38,6 +59,7 @@ class MuleExplainer:
         self.node_mapping = node_mapping
         self.feature_names = get_feature_names()
         self.device = next(model.parameters()).device
+        self.llm_explainer = LLMExplainer()
 
     def explain_account(self, account_id: str) -> Dict:
         """
@@ -74,6 +96,16 @@ class MuleExplainer:
             )
             mule_prob = float(torch.sigmoid(logits[idx]).cpu().item())
 
+        llm_payload = self.llm_explainer.summarize_account(
+            account_id=account_id,
+            confidence_score=mule_prob,
+            feature_attributions=top_features,
+            base_reasoning=reasoning,
+        )
+
+        key_driver_meanings = self._build_driver_meanings(top_features)
+        suggested_actions = self._build_suggested_actions(mule_prob, top_features)
+
         return {
             "account_id": account_id,
             "confidence_score": round(mule_prob, 4),
@@ -81,7 +113,52 @@ class MuleExplainer:
             "feature_attributions": top_features,
             "feature_values": feature_values,
             "xai_reasoning": reasoning,
+            "plain_english_summary": llm_payload.get("summary", ""),
+            "llm_meta": llm_payload.get("meta", {}),
+            "key_driver_meanings": key_driver_meanings,
+            "suggested_actions": suggested_actions,
         }
+
+    def _build_driver_meanings(self, top_features: List[Dict]) -> List[Dict]:
+        driver_rows = []
+        for feat in top_features[:5]:
+            name = feat.get("name", "unknown")
+            normalized = str(name).strip().lower().replace(" ", "_")
+            driver_rows.append({
+                "feature": name,
+                "importance": round(float(feat.get("importance", 0.0)), 4),
+                "meaning": DRIVER_MEANINGS.get(
+                    normalized,
+                    f"Model-derived signal for {str(name).replace('_', ' ')}."
+                ),
+            })
+        return driver_rows
+
+    def _build_suggested_actions(
+        self,
+        confidence_score: float,
+        top_features: List[Dict],
+    ) -> List[str]:
+        feature_names = {f.get("name") for f in top_features}
+        actions: List[str] = []
+
+        if confidence_score >= 0.85:
+            actions.append("Apply temporary transaction restrictions and trigger urgent analyst review.")
+        elif confidence_score >= 0.60:
+            actions.append("Initiate Enhanced Due Diligence (EDD) and increase monitoring frequency.")
+        else:
+            actions.append("Keep under watchlist with periodic behavioral review.")
+
+        if "shared_device_count" in feature_names or "shared_ip_count" in feature_names:
+            actions.append("Request fresh KYC and corroborate device/IP ownership.")
+
+        if "avg_velocity_seconds" in feature_names or "amount_ratio" in feature_names:
+            actions.append("Monitor for rapid in-out pass-through and cash-out attempts.")
+
+        if "pagerank" in feature_names or "total_degree" in feature_names:
+            actions.append("Run ring-neighbor review for first and second hop connected accounts.")
+
+        return actions[:4]
 
     def _compute_gradient_importance(self, node_idx: int) -> np.ndarray:
         """Compute feature importance using input gradients."""

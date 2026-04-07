@@ -5,7 +5,10 @@ import DecryptedText from './DecryptedText'
 import GridScan from './GridScan'
 import './App.css'
 
-const API_BASE = import.meta.env.VITE_API_BASE || ''
+const API_BASE = import.meta.env.VITE_API_BASE
+  || (typeof window !== 'undefined' && window.location.port === '5173'
+    ? 'http://127.0.0.1:8000'
+    : '')
 
 // ─── Intelligence Tab Component ──────────────────────────────────────────────
 // Lives outside App so it can safely use hooks.
@@ -409,14 +412,27 @@ function App() {
     try {
       const opts = { method, headers: { 'Content-Type': 'application/json' } }
       if (body) opts.body = JSON.stringify(body)
-      const res = await fetch(`${API_BASE}${endpoint}`, opts)
+      const apiUrl = `${API_BASE}${endpoint}`
+      const res = await fetch(apiUrl, opts)
       if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.detail || 'API Error')
+        let detail = 'API Error'
+        try {
+          const err = await res.json()
+          detail = err.detail || err.message || JSON.stringify(err)
+        } catch {
+          try {
+            const txt = await res.text()
+            if (txt) detail = txt.slice(0, 180)
+          } catch {
+            // keep default detail
+          }
+        }
+        throw new Error(`${res.status} ${detail}`)
       }
       return await res.json()
     } catch (e) {
-      addLog(`Error: ${e.message}`, 'error')
+      const msg = e?.message || 'Unknown error'
+      addLog(`Error: ${msg}`, 'error')
       throw e
     }
   }, [addLog])
@@ -1329,6 +1345,94 @@ function App() {
                       {explanation.xai_reasoning}
                     </div>
 
+                    {explanation.plain_english_summary && (
+                      <div style={{
+                        padding: 16,
+                        background: '#fff7ed',
+                        border: '1px solid #fed7aa',
+                        borderRadius: 'var(--radius-sm)',
+                        marginBottom: 20,
+                      }}>
+                        <div style={{
+                          fontSize: 11,
+                          color: '#9a3412',
+                          marginBottom: 8,
+                          textTransform: 'uppercase',
+                          letterSpacing: 1,
+                          fontWeight: 700,
+                        }}>
+                          Plain-English Summary (LLM)
+                        </div>
+                        <div style={{ fontSize: 13, color: '#7c2d12', lineHeight: 1.7 }}>
+                          {explanation.plain_english_summary}
+                        </div>
+                        <div style={{ marginTop: 8, fontSize: 11, color: '#9a3412' }}>
+                          Model: {explanation.llm_meta?.model || 'unknown'} · Source: {explanation.llm_meta?.source || 'unknown'}
+                        </div>
+                      </div>
+                    )}
+
+                    {(explanation.key_driver_meanings || []).length > 0 && (
+                      <div style={{
+                        padding: 16,
+                        background: '#f8fafc',
+                        border: '1px solid #e2e8f0',
+                        borderRadius: 'var(--radius-sm)',
+                        marginBottom: 20,
+                      }}>
+                        <div style={{
+                          fontSize: 11,
+                          color: '#334155',
+                          marginBottom: 10,
+                          textTransform: 'uppercase',
+                          letterSpacing: 1,
+                          fontWeight: 700,
+                        }}>
+                          Key Drivers (What They Mean)
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                          {explanation.key_driver_meanings.map((d, idx) => (
+                            <div key={`${d.feature}-${idx}`}>
+                              <div style={{ fontSize: 13, color: '#0f172a', fontWeight: 700 }}>
+                                {d.feature.replace(/_/g, ' ')} ({((d.importance || 0) * 100).toFixed(1)}%)
+                              </div>
+                              <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.6 }}>
+                                {d.meaning}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {(explanation.suggested_actions || []).length > 0 && (
+                      <div style={{
+                        padding: 16,
+                        background: '#f0fdf4',
+                        border: '1px solid #86efac',
+                        borderRadius: 'var(--radius-sm)',
+                        marginBottom: 20,
+                      }}>
+                        <div style={{
+                          fontSize: 11,
+                          color: '#166534',
+                          marginBottom: 8,
+                          textTransform: 'uppercase',
+                          letterSpacing: 1,
+                          fontWeight: 700,
+                        }}>
+                          Suggested Actions
+                        </div>
+                        <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          {explanation.suggested_actions.map((action, idx) => (
+                            <li key={idx} style={{ fontSize: 13, color: '#166534', lineHeight: 1.6 }}>
+                              {action}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
                     <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: 'var(--text-muted)' }}>
                       FEATURE ATTRIBUTIONS
                     </h3>
@@ -1563,9 +1667,71 @@ function App() {
                                     <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 6 }}>
                                       🧠 XAI Auditor (SAR)
                                     </div>
+                                    {subj.xai_auditor.plain_english_summary && (
+                                      <div style={{
+                                        background: '#fff7ed',
+                                        border: '1px solid #fed7aa',
+                                        borderRadius: 8,
+                                        padding: 10,
+                                        marginBottom: 8,
+                                      }}>
+                                        <div style={{ fontSize: 10, fontWeight: 700, color: '#9a3412', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 1 }}>
+                                          Plain-English Summary (LLM)
+                                        </div>
+                                        <div style={{ fontSize: 12, color: '#7c2d12', lineHeight: 1.6 }}>
+                                          {subj.xai_auditor.plain_english_summary}
+                                        </div>
+                                        <div style={{ marginTop: 6, fontSize: 10, color: '#9a3412' }}>
+                                          Model: {subj.xai_auditor.llm_meta?.model || 'unknown'} · Source: {subj.xai_auditor.llm_meta?.source || 'unknown'}
+                                        </div>
+                                      </div>
+                                    )}
                                     {subj.xai_auditor.xai_reasoning && (
                                       <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 8 }}>
                                         {subj.xai_auditor.xai_reasoning}
+                                      </div>
+                                    )}
+                                    {(subj.xai_auditor.key_driver_meanings || []).length > 0 && (
+                                      <div style={{
+                                        background: '#f8fafc',
+                                        border: '1px solid #e2e8f0',
+                                        borderRadius: 8,
+                                        padding: 10,
+                                        marginBottom: 8,
+                                      }}>
+                                        <div style={{ fontSize: 10, fontWeight: 700, color: '#334155', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 1 }}>
+                                          Key Drivers (What They Mean)
+                                        </div>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                          {subj.xai_auditor.key_driver_meanings.map((d, idx) => (
+                                            <div key={`${d.feature}-${idx}`}>
+                                              <div style={{ fontSize: 12, color: '#0f172a', fontWeight: 700 }}>
+                                                {(d.feature || '').replace(/_/g, ' ')} ({((d.importance || 0) * 100).toFixed(1)}%)
+                                              </div>
+                                              <div style={{ fontSize: 12, color: '#475569', lineHeight: 1.5 }}>
+                                                {d.meaning}
+                                              </div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+                                    {(subj.xai_auditor.suggested_actions || []).length > 0 && (
+                                      <div style={{
+                                        background: '#f0fdf4',
+                                        border: '1px solid #86efac',
+                                        borderRadius: 8,
+                                        padding: 10,
+                                        marginBottom: 8,
+                                      }}>
+                                        <div style={{ fontSize: 10, fontWeight: 700, color: '#166534', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 1 }}>
+                                          Suggested Actions
+                                        </div>
+                                        <ul style={{ margin: 0, paddingLeft: 16, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                          {subj.xai_auditor.suggested_actions.map((a, idx) => (
+                                            <li key={idx} style={{ fontSize: 12, color: '#166534', lineHeight: 1.5 }}>{a}</li>
+                                          ))}
+                                        </ul>
                                       </div>
                                     )}
                                     {(subj.xai_auditor.feature_attributions || []).length > 0 && (

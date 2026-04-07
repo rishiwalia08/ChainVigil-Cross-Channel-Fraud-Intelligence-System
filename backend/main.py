@@ -27,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.config import DATA_DIR, MODEL_DIR
 from backend.models.schemas import (
     GenerateDataRequest, IngestRequest, TrainRequest,
-    GraphStats, PipelineStatus
+    GraphStats, PipelineStatus, AccountExplanationResponse
 )
 from backend.data.generator import generate_all_data
 from backend.graph.builder import GraphBuilder
@@ -410,7 +410,7 @@ async def run_risk_analysis():
 
 # ─── Phase 4: XAI & Reports ───────────────────────────────────
 
-@app.get("/api/explain/{account_id}")
+@app.get("/api/explain/{account_id}", response_model=AccountExplanationResponse)
 async def explain_account(account_id: str):
     """Get XAI explanation for a specific account."""
     if state["trainer"] is None:

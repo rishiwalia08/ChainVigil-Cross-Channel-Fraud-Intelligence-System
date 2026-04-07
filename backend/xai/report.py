@@ -136,6 +136,10 @@ def generate_sar_report(
                 "confidence_score": xai_payload.get("confidence_score"),
                 "xai_reasoning": xai_payload.get("xai_reasoning"),
                 "feature_attributions": xai_payload.get("feature_attributions", [])[:5],
+                "plain_english_summary": xai_payload.get("plain_english_summary"),
+                "llm_meta": xai_payload.get("llm_meta", {}),
+                "key_driver_meanings": xai_payload.get("key_driver_meanings", [])[:5],
+                "suggested_actions": xai_payload.get("suggested_actions", [])[:4],
             }
 
         subjects.append({

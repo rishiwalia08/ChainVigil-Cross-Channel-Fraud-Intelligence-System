@@ -21,7 +21,7 @@ CHANNELS = ["UPI", "ATM", "WEB", "MOBILE_APP"]
 GNN_HIDDEN_DIM = 48   # enough capacity to learn mule patterns
 GNN_NUM_LAYERS = 3    # 3-hop aggregation for ring detection
 GNN_LEARNING_RATE = 0.005
-GNN_EPOCHS = 20
+GNN_EPOCHS = 40
 GNN_DROPOUT = 0.35    # standard dropout — not hostile
 RISK_THRESHOLD = 0.55  # balanced threshold for 100-200 escalations
 
